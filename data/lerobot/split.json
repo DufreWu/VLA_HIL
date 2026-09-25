@@ -1,0 +1,37 @@
+{
+  "train": [
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000028",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000013",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000018",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000003",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000017",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000012",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000019",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000023",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000000",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000026",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000024",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000008",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000007",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000001",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000015",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000006",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000016",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000020",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000005",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000030",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000027",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000002",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000021",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000009",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000011"
+  ],
+  "val": [
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000014",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000010",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000022",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000004",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000025",
+    "/home/chenwu/Documents/Github/VLA_HIL/data/raw/episode_000029"
+  ]
+}

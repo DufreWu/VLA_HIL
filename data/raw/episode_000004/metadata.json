@@ -1,0 +1,20 @@
+{
+  "success": true,
+  "lifted": true,
+  "max_xy_error_m": 0.02849180217289442,
+  "max_height_error_m": 0.0008000507950782776,
+  "drift_m": 9.065936268370933e-08,
+  "min_finger_opening_m": 0.03999556973576546,
+  "attempt": 11,
+  "initial": [
+    0.49706980243949034,
+    -0.1606878878677802,
+    0.0258
+  ],
+  "seed": 42,
+  "wall_seconds": 23.163557658990612,
+  "controller_done": true,
+  "task": "Pick up the red cube and place it at the target on the table.",
+  "fps": 20,
+  "frames": 430
+}

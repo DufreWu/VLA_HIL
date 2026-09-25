@@ -1,0 +1,8 @@
+Validation performed in the authoring environment
+
+- Python syntax: 12 files passed.
+- unittest: 6 tests passed, including live HTTP mock server round trip.
+- train_smolvla.py and run_hil.py --help: passed.
+- Not installed here: Isaac Sim, PyTorch, LeRobot, CUDA, JetPack.
+- Not executed here: simulation collection/replay, dataset conversion with LeRobot, fine-tuning, real VLA inference.
+- Hardware gates are documented in README_PIPELINE.md. No trained weights or collected demonstrations are included.

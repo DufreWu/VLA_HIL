@@ -1,0 +1,2 @@
+# Install in a SEPARATE Python 3.10/3.11 environment, not Isaac Sim's environment.
+lerobot[smolvla]==0.4.3
