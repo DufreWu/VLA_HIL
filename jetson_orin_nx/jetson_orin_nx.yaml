@@ -1,0 +1,13 @@
+cpu_cores_num: 8
+cpu_path: "/sys/devices/system/cpu"
+gpu_path: "/sys/devices/platform/17000000.gpu/devfreq/17000000.gpu"
+mem_path: "/sys/kernel/debug/bpmp/debug/clk/emc"
+emc_cap_path: "/sys/kernel/nvpmodel_clk_cap/emc"
+
+# 268800, 422400, 576000, 729600, 883200, 1036800,
+cpu_freqs: [422400, 576000, 729600, 883200, 1036800, 1190400, 1344000, 1497600, 1651200, 1804800, 1958400, 1984000]
+gpu_freqs: [306000000, 408000000, 510000000, 612000000, 714000000, 816000000, 918000000]
+mem_freqs: [204000000, 665600000, 1600000000, 2133000000, 2750000000, 3199000000]
+max_mem_freq: "3199000000"
+
+ina_path: "/sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon3"
