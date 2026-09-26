@@ -17,11 +17,11 @@ class Engine:
             raise RuntimeError('Use LeRobot 0.4.3 on both training host and NX.')
         import torch
         from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
-        from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
+        from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies.factory import make_pre_post_processors
         check_contract(json.loads((Path(model)/'scene_contract.json').read_text()))
         self.torch, self.device = torch, device
-        config = SmolVLAConfig.from_pretrained(model)
+        config = PreTrainedConfig.from_pretrained(model)
         config.device = device
         self.policy = SmolVLAPolicy.from_pretrained(model, config=config).to(device).eval()
         self.policy.config.device = device
@@ -32,8 +32,20 @@ class Engine:
             # Some serializers deserialize tuples as lists.
             if list(self.policy.config.output_features['action'].shape) != [9]:
                 raise ValueError('Expected nine-dimensional action output.')
-        if set(self.policy.config.image_features) != {IMAGE_KEY}:
-            raise ValueError('Checkpoint cameras do not match the one-camera scene.')
+        camera_keys = set(self.policy.config.image_features)
+
+        if IMAGE_KEY not in camera_keys:
+            raise ValueError(
+                f"Scene camera {IMAGE_KEY!r} is absent from "
+                f"checkpoint camera keys: {sorted(camera_keys)}"
+            )
+
+        unused_cameras = camera_keys - {IMAGE_KEY}
+        if unused_cameras:
+            print(
+                f"Using scene camera: {IMAGE_KEY}; "
+                f"checkpoint cameras not supplied: {sorted(unused_cameras)}"
+            )
 
     def infer(self, request):
         torch = self.torch
