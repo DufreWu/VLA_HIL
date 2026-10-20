@@ -8,7 +8,7 @@ def array(x):
 
 
 class FrankaScene:
-    def __init__(self, app):
+    def __init__(self, app, before_simulation=None):
         import omni.usd
         import omni.replicator.core as rep
         import isaacsim.core.experimental.utils.app as app_utils
@@ -19,6 +19,7 @@ class FrankaScene:
         from isaacsim.robot.experimental.manipulators.examples.franka import FrankaPickPlace
         from isaacsim.core.experimental.prims import RigidPrim
 
+        self.rep = rep
         self.app, self.sm, self.rm = app, SimulationManager, RenderingManager
         self.app_utils = app_utils
         stage = omni.usd.get_context().get_stage()
@@ -66,6 +67,8 @@ class FrankaScene:
                                                 eye=[1.4, -1.3, 1.2], target=[.3, 0, .2])
         except (RuntimeError, AssertionError) as exc:
             print(f'Viewport unavailable (observation camera still configured): {exc}')
+        if before_simulation is not None:
+            before_simulation(stage)
         SimulationManager.setup_simulation(dt=1/60, device='cpu')
         RenderingManager.set_dt(1/60)
         SimulationManager.get_physics_scenes()[0].set_enabled_gpu_dynamics(False)
@@ -115,8 +118,11 @@ class FrankaScene:
 
     def observation(self):
         # Render without advancing physics. State and image describe the same instant.
-        self.rm.render()
-        self.rm.render()
+        before = self.sm.get_simulation_time()
+        self.rep.orchestrator.step(delta_time=0.0, pause_timeline=False)
+        after = self.sm.get_simulation_time()
+        if not np.isclose(after, before, atol=1e-7):
+            raise RuntimeError('Camera capture advanced physics time')
         image = np.asarray(self.rgb.get_data())
         if image.shape[:2] != RESOLUTION[::-1] or image.ndim != 3 or image.shape[2] < 3:
             raise RuntimeError(f'RGB annotator not ready: {image.shape}')

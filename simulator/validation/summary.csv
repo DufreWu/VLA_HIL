@@ -1,0 +1,3 @@
+task,episodes,successes,task_success_rate_pct,collision_rate_pct,task_completion_time_s,completion_time_std_s,mean_episode_duration_s
+grasping,10,10,100.0,0.0,8.583333333333334,4.263256414560601e-15,8.583333333333334
+pushing,10,10,100.0,0.0,9.97,0.15362291495737396,9.97

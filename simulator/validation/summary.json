@@ -1,0 +1,20 @@
+{
+  "grasping": {
+    "episodes": 10,
+    "successes": 10,
+    "task_success_rate_pct": 100.0,
+    "collision_rate_pct": 0.0,
+    "task_completion_time_s": 8.583333333333334,
+    "completion_time_std_s": 4.263256414560601e-15,
+    "mean_episode_duration_s": 8.583333333333334
+  },
+  "pushing": {
+    "episodes": 10,
+    "successes": 10,
+    "task_success_rate_pct": 100.0,
+    "collision_rate_pct": 0.0,
+    "task_completion_time_s": 9.97,
+    "completion_time_std_s": 0.15362291495737396,
+    "mean_episode_duration_s": 9.97
+  }
+}

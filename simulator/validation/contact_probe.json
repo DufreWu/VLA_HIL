@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "camera_shape": [
+    256,
+    256,
+    3
+  ],
+  "capture_physics_time_change_s": 0.0,
+  "collision_threshold_n": 1.0,
+  "detected_contacts": [
+    {
+      "actor0": "/World/robot/panda_rightfinger",
+      "actor1": "/World/Table",
+      "force_n": 22.642618417739868
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "arguments": {
+    "task": "both",
+    "episodes": 10,
+    "seed": 42,
+    "timeout": 30.0,
+    "hold": 1.0,
+    "collision_force": 1.0,
+    "output": "outputs/isaac_validation_seed42",
+    "headless": true,
+    "save_preview": true,
+    "policy": "scripted",
+    "server": "http://127.0.0.1:8080",
+    "execute_steps": 10,
+    "allow_mock": false
+  },
+  "metrics": {
+    "timeout_s": 30.0,
+    "hold_s": 1.0,
+    "lift_m": 0.1,
+    "target_tolerance_m": 0.03,
+    "surface_tolerance_m": 0.015,
+    "max_speed_m_s": 0.03,
+    "collision_force_n": 1.0
+  },
+  "physics_hz": 60,
+  "action_hz": 20,
+  "isaac_sim_target": "6.0.0",
+  "policy_health": null
+}
