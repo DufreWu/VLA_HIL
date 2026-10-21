@@ -3,6 +3,8 @@ from dataclasses import dataclass, asdict
 import math
 import statistics
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class TaskConfig:
@@ -22,6 +24,63 @@ class TaskConfig:
             raise ValueError('hold_s must not exceed timeout_s')
 
 
+def average_joint_jerk(joint_positions, dt_s, smoothing_window=1):
+    """Compute AJJ from the third derivative of seven arm-joint positions.
+
+    We use a centered finite-difference estimate of the third derivative on the
+    measured joint trajectory. A unit-sum moving average is used only when a
+    non-default smoothing window is requested; the default uses the raw samples to
+    preserve the exact scale implied by the metric definition.
+    """
+    q = np.asarray(joint_positions, dtype=np.float64)
+    if q.ndim != 2 or q.shape[1] != 7:
+        raise ValueError('Expected joint positions with shape [N, 7].')
+    if q.shape[0] < 6:
+        raise ValueError('Need at least 6 samples to estimate jerk reliably.')
+    if not math.isfinite(float(dt_s)) or float(dt_s) <= 0:
+        raise ValueError('dt_s must be finite and positive.')
+    smoothing_window = int(smoothing_window)
+    if smoothing_window < 1:
+        raise ValueError('Smoothing window must be positive.')
+
+    signal = q.copy()
+    if smoothing_window > 1:
+        kernel = np.ones(smoothing_window, dtype=np.float64) / smoothing_window
+        pad = smoothing_window // 2
+        padded = np.pad(signal, ((pad, pad), (0, 0)), mode='edge')
+        signal = np.apply_along_axis(lambda row: np.convolve(row, kernel, mode='valid'), 0, padded)
+
+    d1 = np.gradient(signal, dt_s, axis=0, edge_order=2)
+    d2 = np.gradient(d1, dt_s, axis=0, edge_order=2)
+    d3 = np.gradient(d2, dt_s, axis=0, edge_order=2)
+    rms_per_joint = np.sqrt(np.mean(d3 ** 2, axis=0))
+    return float(np.mean(rms_per_joint))
+
+
+def _percentile_higher(values, percent):
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return np.nan
+    return float(np.sort(arr)[max(0, int(np.ceil(percent / 100.0 * arr.size)) - 1)])
+
+
+def summarize_inference_samples(inference_ms, rtt_ms=None):
+    inf = np.asarray(inference_ms, dtype=np.float64)
+    valid_inf = inf[np.isfinite(inf) & (inf >= 0)]
+    if valid_inf.size == 0:
+        return dict(mean_inference_ms=None, p95_inference_ms=None,
+                    mean_rtt_ms=None, number_of_inference_requests=0)
+    stats = dict(mean_inference_ms=float(np.mean(valid_inf)),
+                 p95_inference_ms=_percentile_higher(valid_inf, 95),
+                 number_of_inference_requests=int(valid_inf.size))
+    if rtt_ms is not None:
+        rtt = np.asarray(rtt_ms, dtype=np.float64)
+        valid_rtt = rtt[np.isfinite(rtt) & (rtt >= 0)]
+        if valid_rtt.size:
+            stats['mean_rtt_ms'] = float(np.mean(valid_rtt))
+    return stats
+
+
 class EpisodeMetrics:
     def __init__(self, task, initial, target, config):
         if task not in ('grasping', 'pushing'):
@@ -34,6 +93,10 @@ class EpisodeMetrics:
         self.collision = False
         self.reason = None
         self.push_lifted = False
+        self.tct_wall_s = None
+        self.tct_sim_s = None
+        self.ajj = None
+        self.inference_stats = {}
 
     @property
     def done(self):
@@ -67,17 +130,21 @@ class EpisodeMetrics:
                 self.valid_since = t
             if t - self.valid_since + 1e-9 >= c.hold_s and t <= c.timeout_s + 1e-9:
                 self.success, self.completion_time = True, t
+                self.tct_sim_s = t
         else:
             self.valid_since = None
         if not self.success and t + 1e-9 >= c.timeout_s:
             self.reason = 'timeout'
 
     def result(self):
-        if not self.done:
+        if not self.done and self.tct_sim_s is None and self.tct_wall_s is None:
             raise RuntimeError('Cannot report an unfinished episode')
-        return dict(task=self.task, success=self.success, collision=self.collision,
+        result = dict(task=self.task, success=self.success, collision=self.collision,
                     completion_time_s=self.completion_time, duration_s=self.elapsed,
-                    reason='success' if self.success else self.reason)
+                    tct_sim_s=self.tct_sim_s, tct_wall_s=self.tct_wall_s,
+                    ajj=self.ajj, reason='success' if self.success else self.reason)
+        result.update(self.inference_stats)
+        return result
 
 
 def summarize(rows):

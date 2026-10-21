@@ -1,5 +1,7 @@
 import unittest
-from simulator.evaluation.metrics import TaskConfig, EpisodeMetrics, summarize
+import numpy as np
+from simulator.evaluation.metrics import (TaskConfig, EpisodeMetrics, summarize,
+                                         average_joint_jerk, summarize_inference_samples)
 from simulator.evaluation.contacts import unintended
 
 
@@ -81,6 +83,30 @@ class MetricsTests(unittest.TestCase):
     def test_invalid_config(self):
         for kwargs in ({'timeout_s': 0}, {'hold_s': 31}, {'lift_m': float('nan')}):
             with self.assertRaises(ValueError): TaskConfig(**kwargs)
+
+    def test_average_joint_jerk_matches_analytic_value(self):
+        t = np.linspace(0.0, 1.0, 2000, endpoint=False)
+        dt = np.diff(t[:2])[0]
+        q = np.stack([np.sin(2*np.pi*t)] * 7, axis=1)
+        ajj = average_joint_jerk(q, dt_s=dt)
+        self.assertTrue(np.isfinite(ajj))
+        self.assertAlmostEqual(ajj, 175.1, places=0)
+
+    def test_tct_wall_and_sim_are_reported_separately(self):
+        m = self.make()
+        m.update(.1, [.45, -.2, .2], [0]*3, True)
+        m.update(1.0, [.45, -.2, .2], [0]*3, True)
+        m.tct_wall_s = 0.85
+        m.tct_sim_s = 1.0
+        result = m.result()
+        self.assertAlmostEqual(result['tct_wall_s'], 0.85)
+        self.assertAlmostEqual(result['tct_sim_s'], 1.0)
+
+    def test_inference_summary_aggregates_latency_samples(self):
+        stats = summarize_inference_samples([10.0, 12.0, 16.0, 30.0, 100.0])
+        self.assertAlmostEqual(stats['mean_inference_ms'], 33.6)
+        self.assertAlmostEqual(stats['p95_inference_ms'], 100.0)
+        self.assertEqual(stats['number_of_inference_requests'], 5)
 
 
 if __name__ == '__main__':

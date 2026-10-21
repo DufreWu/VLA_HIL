@@ -139,12 +139,22 @@ def main():
                                            save_all=True, append_images=preview_frames[1:],
                                            duration=500, loop=0)
                     preview_frames[-1].save(args.output/f'{task}_{episode:04d}_final.png')
+                metrics.tct_wall_s = time.perf_counter() - wall_start
+                if metrics.tct_sim_s is None:
+                    metrics.tct_sim_s = metrics.elapsed
+                metrics.inference_stats = dict(
+                    mean_rtt_ms=statistics.mean(policy.rtts) if getattr(policy, 'rtts', []) else None,
+                    p95_rtt_ms=np.percentile(policy.rtts, 95) if getattr(policy, 'rtts', []) else None,
+                    mean_inference_ms=statistics.mean(policy.inference_times)
+                    if getattr(policy, 'inference_times', []) else None,
+                    p95_inference_ms=np.percentile(policy.inference_times, 95)
+                    if getattr(policy, 'inference_times', []) else None,
+                    number_of_inference_requests=len(getattr(policy, 'inference_times', []) or []),
+                )
                 result = dict(metrics.result(), episode=episode, seed=args.seed,
                               initial=initial, target=target, policy=args.policy,
-                              clipped_actions=clipped, wall_time_s=time.perf_counter()-wall_start,
-                              mean_rtt_ms=statistics.mean(policy.rtts) if getattr(policy, 'rtts', []) else None,
-                              mean_inference_ms=statistics.mean(policy.inference_times)
-                              if getattr(policy, 'inference_times', []) else None)
+                              clipped_actions=clipped, wall_time_s=metrics.tct_wall_s,
+                              tct_wall_s=metrics.tct_wall_s, tct_sim_s=metrics.tct_sim_s)
                 rows.append(result)
                 with (args.output/'episodes.jsonl').open('a') as f:
                     f.write(json.dumps(result, allow_nan=False)+'\n')
