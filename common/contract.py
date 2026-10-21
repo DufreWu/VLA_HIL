@@ -7,9 +7,14 @@ import numpy as np
 from PIL import Image
 
 SCHEMA = 'franka_joint_targets_v1'
+SCHEMA_MULTITASK = 'franka_joint_targets_v2'
 JOINTS = [f'panda_joint{i}' for i in range(1, 8)] + ['panda_finger_joint1', 'panda_finger_joint2']
 IMAGE_KEY = 'observation.images.camera1'
 TASK = 'Pick up the red cube and place it at the target on the table.'
+TASK_INSTRUCTIONS = {
+    'grasping': 'Grasp the red cube and lift it above the table.',
+    'pushing': 'Push the red cube to the green target on the table.',
+}
 FPS = 20
 RESOLUTION = (256, 256)
 TARGET = [0.45, 0.20, 0.0258]
@@ -17,17 +22,49 @@ CAMERA_EYE = [1.15, -0.85, 0.95]
 CAMERA_TARGET = [0.40, 0.0, 0.15]
 
 
-def contract():
-    return dict(schema=SCHEMA, joints=JOINTS, fps=FPS, image_key=IMAGE_KEY,
+def task_instruction(task):
+    if task is None:
+        return TASK
+    task = str(task).lower()
+    if task not in TASK_INSTRUCTIONS:
+        raise ValueError(f'Unknown task {task!r}; supported tasks: {sorted(TASK_INSTRUCTIONS)}')
+    return TASK_INSTRUCTIONS[task]
+
+
+def contract(task=None):
+    if task is None:
+        return dict(schema=SCHEMA, joints=JOINTS, fps=FPS, image_key=IMAGE_KEY,
+                    image_size=list(RESOLUTION), state_dim=9, action_dim=9,
+                    action_semantics='absolute_joint_position_targets',
+                    units=['rad'] * 7 + ['m'] * 2, task=TASK, target=TARGET,
+                    camera_eye=CAMERA_EYE, camera_target=CAMERA_TARGET, hand_offset_m=0.10)
+    task = str(task).lower()
+    return dict(schema=SCHEMA_MULTITASK, joints=JOINTS, fps=FPS, image_key=IMAGE_KEY,
                 image_size=list(RESOLUTION), state_dim=9, action_dim=9,
                 action_semantics='absolute_joint_position_targets',
-                units=['rad'] * 7 + ['m'] * 2, task=TASK, target=TARGET,
-                camera_eye=CAMERA_EYE, camera_target=CAMERA_TARGET, hand_offset_m=0.10)
+                units=['rad'] * 7 + ['m'] * 2,
+                task=task_instruction(task), supported_tasks=sorted(TASK_INSTRUCTIONS),
+                target=TARGET, camera_eye=CAMERA_EYE, camera_target=CAMERA_TARGET,
+                hand_offset_m=0.10, task_name=task)
+
+
+def multitask_contract():
+    return contract('grasping')
 
 
 def check_contract(value):
-    if value != contract():
-        raise ValueError('Model/dataset scene contract differs from this project; do not execute it.')
+    if value == contract():
+        return
+    if value.get('schema') == SCHEMA_MULTITASK:
+        if value.get('joints') != JOINTS:
+            raise ValueError('Model/dataset scene contract differs from this project; do not execute it.')
+        if value.get('image_key') != IMAGE_KEY or value.get('state_dim') != 9 or value.get('action_dim') != 9:
+            raise ValueError('Model/dataset scene contract differs from this project; do not execute it.')
+        supported = value.get('supported_tasks', [])
+        if set(supported) != set(TASK_INSTRUCTIONS):
+            raise ValueError('Multi-task contract must declare all supported tasks.')
+        return
+    raise ValueError('Model/dataset scene contract differs from this project; do not execute it.')
 
 
 def vector(value):

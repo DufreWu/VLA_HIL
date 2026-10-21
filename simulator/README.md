@@ -36,6 +36,17 @@ simulator/run.sh --headless --task both --episodes 100 --seed 42 \
 # Run one task with explicit timing and contact thresholds.
 simulator/run.sh --headless --task pushing --episodes 10 --timeout 30 \
   --hold 1 --collision-force 1 --output outputs/pushing
+
+# Continuous HIL, mock transport test before Jetson inference.
+python jetson_orin_nx/policy_server.py --mock --host 127.0.0.1 --port 8081
+python simulator/evaluate.py --task grasping --policy remote --server http://127.0.0.1:8081 \
+  --mode continuous --allow-mock --episodes 1 --output outputs/hil_grasping_mock
+
+# Continuous HIL on a real Jetson Orin NX.
+python simulator/evaluate.py --task grasping --policy remote --server http://JETSON_IP:8080 \
+  --mode continuous --episodes 10 --output outputs/hil_grasping
+python simulator/evaluate.py --task pushing --policy remote --server http://JETSON_IP:8080 \
+  --mode continuous --episodes 10 --output outputs/hil_pushing
 ```
 
 `simulator/run.sh` uses `.venv-isaacsim/bin/python`; direct Python commands use the

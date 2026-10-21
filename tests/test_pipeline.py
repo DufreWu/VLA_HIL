@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -13,7 +14,9 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 from PIL import Image
 from common.contract import (contract, check_contract, action_chunk, trim_chunk,
-                             encode_image, decode_image, success_metrics, TARGET, FPS)
+                             encode_image, decode_image, success_metrics, TARGET, FPS,
+                             task_instruction, multitask_contract)
+from simulator.evaluation.policies import RemotePolicy
 from training.convert_dataset import validate_episode
 
 
@@ -88,6 +91,57 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 400)
         finally:
             process.terminate(); process.wait(timeout=5)
+
+    def test_continuous_remote_policy_handles_queue_and_mock_transport(self):
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
+        process = subprocess.Popen([sys.executable, str(ROOT/'jetson_orin_nx/policy_server.py'),
+                    '--mock', '--host', '127.0.0.1', '--port', str(port)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        base = f'http://127.0.0.1:{port}'
+        try:
+            for _ in range(100):
+                try:
+                    with urllib.request.urlopen(base+'/health', timeout=.2) as r:
+                        self.assertTrue(json.load(r)['mock'])
+                    break
+                except (OSError, urllib.error.URLError):
+                    if process.poll() is not None: self.fail('Server exited')
+                    time.sleep(.02)
+            else: self.fail('Server did not start')
+
+            observed_on_main_thread = []
+            class DummyScene:
+                def state(self):
+                    return np.zeros(9, dtype=np.float32)
+                def observation(self):
+                    observed_on_main_thread.append(threading.current_thread() is threading.main_thread())
+                    return np.zeros(9, dtype=np.float32), np.zeros((256, 256, 3), dtype=np.uint8)
+
+            policy = RemotePolicy(base, execute_steps=10, allow_mock=True,
+                                  mode='continuous', prefetch=3)
+            policy.reset(DummyScene(), 'grasping', [.45, -.2, .0258], [.45, 0.0, .0258])
+            for i in range(6):
+                target = policy.act(i/20.0)
+                self.assertEqual(target.shape, (9,))
+                self.assertTrue(np.isfinite(target).all())
+                if i == 2:
+                    time.sleep(.05)
+            self.assertGreaterEqual(len(observed_on_main_thread), 1)
+            self.assertTrue(all(observed_on_main_thread))
+            self.assertGreaterEqual(len(policy.rtts), 1)
+            self.assertGreaterEqual(len(policy.inference_times), 1)
+        finally:
+            process.terminate(); process.wait(timeout=5)
+            policy.executor.shutdown(wait=True, cancel_futures=True)
+
+    def test_multitask_contract_and_task_instructions(self):
+        c = multitask_contract()
+        self.assertEqual(c['schema'], 'franka_joint_targets_v2')
+        self.assertEqual(c['task_name'], 'grasping')
+        self.assertEqual(c['task'], task_instruction('grasping'))
+        self.assertIn('pushing', c['supported_tasks'])
+        check_contract(c)
 
 
 if __name__ == '__main__':

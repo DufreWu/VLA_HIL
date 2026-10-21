@@ -1,5 +1,5 @@
 {
-  "schema": "franka_joint_targets_v1",
+  "schema": "franka_joint_targets_v2",
   "joints": [
     "panda_joint1",
     "panda_joint2",
@@ -31,7 +31,11 @@
     "m",
     "m"
   ],
-  "task": "Pick up the red cube and place it at the target on the table.",
+  "task": "Grasp the red cube and lift it above the table.",
+  "supported_tasks": [
+    "grasping",
+    "pushing"
+  ],
   "target": [
     0.45,
     0.2,
@@ -47,5 +51,6 @@
     0.0,
     0.15
   ],
-  "hand_offset_m": 0.1
+  "hand_offset_m": 0.1,
+  "task_name": "grasping"
 }

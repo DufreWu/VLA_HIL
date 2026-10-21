@@ -10,7 +10,7 @@ import statistics
 import sys
 import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from simulator.evaluation.metrics import TaskConfig, EpisodeMetrics, summarize
+from simulator.evaluation.metrics import TaskConfig, EpisodeMetrics, average_joint_jerk, summarize
 
 
 def save_json(path, value):
@@ -30,11 +30,13 @@ def parse_args():
     p.add_argument('--save-preview', action='store_true', help='Save camera GIFs at 2 Hz for motion inspection')
     p.add_argument('--policy', default='scripted', help='scripted, remote, or module:Class with reset/act methods')
     p.add_argument('--server', default='http://127.0.0.1:8080')
+    p.add_argument('--mode', choices=['sync', 'continuous'], default='sync')
     p.add_argument('--execute-steps', type=int, default=10)
+    p.add_argument('--prefetch', type=int, default=5)
     p.add_argument('--allow-mock', action='store_true')
     a = p.parse_args()
-    if a.episodes < 1 or not 1 <= a.execute_steps <= 50:
-        p.error('episodes must be positive; execute-steps must be between 1 and 50')
+    if a.episodes < 1 or not 1 <= a.execute_steps <= 50 or not 0 <= a.prefetch < a.execute_steps:
+        p.error('episodes must be positive; execute-steps must be between 1 and 50; prefetch must be in [0, execute_steps)')
     try:
         config = TaskConfig(timeout_s=a.timeout, hold_s=a.hold, collision_force_n=a.collision_force)
     except ValueError as exc:
@@ -48,7 +50,8 @@ def main():
     from simulator.evaluation.contacts import ContactMonitor, FINGERS
     if args.policy == 'remote':
         from simulator.evaluation.policies import RemotePolicy
-        policy = RemotePolicy(args.server, args.execute_steps, args.allow_mock)
+        policy = RemotePolicy(args.server, args.execute_steps, args.allow_mock,
+                              mode=args.mode, prefetch=args.prefetch)
     elif args.policy == 'scripted':
         from simulator.evaluation.controllers import ScriptedPolicy
         policy = ScriptedPolicy()
@@ -99,6 +102,7 @@ def main():
                 preview_frames = []
                 wall_start = time.perf_counter()
                 trace = args.output/f'{task}_{episode:04d}_trace.jsonl'
+                joint_positions = []
                 # Sample success at 60 Hz; contacts at every physics step, actions at 20 Hz.
                 start_sim = scene.sm.get_simulation_time()
                 with trace.open('w') as log:
@@ -119,6 +123,7 @@ def main():
                                 raise RuntimeError('Unexpected physics timestep')
                             position = scene.cube_position().tolist()
                             velocity = array(scene.cube.get_velocities()[0])[0].tolist()
+                            joint_positions.append(np.asarray(scene.state()[:7], dtype=np.float64).copy())
                             metrics.update(after-start_sim, position, velocity,
                                            monitor.fingers == FINGERS, monitor.collision)
                             log.write(json.dumps(dict(t=after-start_sim, position=position,
@@ -142,6 +147,9 @@ def main():
                 metrics.tct_wall_s = time.perf_counter() - wall_start
                 if metrics.tct_sim_s is None:
                     metrics.tct_sim_s = metrics.elapsed
+                if len(joint_positions) >= 6:
+                    metrics.ajj = average_joint_jerk(np.asarray(joint_positions, dtype=np.float64), dt_s=1/60)
+                queue_stats = policy.queue_stats() if hasattr(policy, 'queue_stats') else {}
                 metrics.inference_stats = dict(
                     mean_rtt_ms=statistics.mean(policy.rtts) if getattr(policy, 'rtts', []) else None,
                     p95_rtt_ms=np.percentile(policy.rtts, 95) if getattr(policy, 'rtts', []) else None,
@@ -151,6 +159,7 @@ def main():
                     if getattr(policy, 'inference_times', []) else None,
                     number_of_inference_requests=len(getattr(policy, 'inference_times', []) or []),
                 )
+                metrics.inference_stats.update(queue_stats)
                 result = dict(metrics.result(), episode=episode, seed=args.seed,
                               initial=initial, target=target, policy=args.policy,
                               clipped_actions=clipped, wall_time_s=metrics.tct_wall_s,
@@ -177,6 +186,8 @@ def main():
     finally:
         monitor.close()
         try:
+            if hasattr(policy, 'executor'):
+                policy.executor.shutdown(wait=True, cancel_futures=True)
             if scene is not None:
                 scene.close()
         finally:

@@ -4,10 +4,12 @@ This package implements the four requested stages. Merge its folders into your
 `VLA_HIL` project. It does not replace your existing `franka_pick_place.py` or
 `README.md`. Run commands below from the `VLA_HIL` project root.
 
-**Validation status:** Python syntax and six CPU-only data/protocol tests passed.
-Isaac Sim rendering/physics, LeRobot dataset conversion/training, and real model
-inference on NX have NOT been executed here. This is an implementation to validate
-on your hardware, not a claim of measured success, speed, or memory use.
+**Validation status:** The current workspace has a verified smoke-training pass for
+the multi-task SmolVLA pipeline on CPU, and the repository regression tests pass.
+Full multi-task training/export is still dependent on a compatible CUDA/PyTorch
+stack for the host GPU. This README reflects the working command set and the
+current project status, not a claim that the full production run has completed on
+this machine.
 
 ## Files
 
@@ -116,64 +118,71 @@ the terminal. Check hand/cube geometry and the teacher trajectory first.
 
 ## 2. Collect a dataset and convert it
 
-In Isaac Sim:
+For the current two-task dataset (grasping + pushing), collect raw episodes in
+Isaac Sim and validate them before conversion:
 
 ```bash
 python simulator/franka/collect_demos.py \
-  --output data/raw --episodes 60 --max-attempts 180 --seed 42
+  --output data/raw_multitask --episodes 20 --max-attempts 80 --seed 7
+
+python training/validate_multitask_dataset.py --input data/raw_multitask
 ```
 
-Each episode randomizes the cube over x=[0.40,0.50], y=[-0.25,-0.15] meters.
-The target, lighting, camera and language task stay fixed. This is a narrow
-single-task starting dataset, not evidence of language generalization. Broaden
-variation only after a baseline works. Collection keeps one episode in memory.
-PNG storage can consume several GB; output directories must be new.
-
-In the separate **training** environment:
+The validation step checks task coverage, image size, action ranges, timestamps,
+metadata consistency and the expected grasp/push markers before any training data
+is built. After a valid raw set is produced, convert it to the LeRobot split used
+by the trainer:
 
 ```bash
 python training/convert_dataset.py \
-  --raw data/raw --output data/lerobot \
-  --repo-id local/franka_pick_place --val-fraction 0.2
+  --raw data/raw_multitask --output data/lerobot \
+  --repo-id local/franka_multitask_v2 --val-fraction 0.2 --seed 7 --min-per-task 2
 ```
 
-This creates separate `data/lerobot/train` and `data/lerobot/val` datasets.
-Splitting is by episode, not frame, and split provenance is saved. Images are
-stored as images rather than encoded video. Nothing is uploaded to Hugging Face.
+This creates separate `data/lerobot/train` and `data/lerobot/val` datasets for
+both tasks. Splitting is by episode, not frame, and split provenance is saved.
+Images are stored as images rather than encoded video. Nothing is uploaded to
+Hugging Face.
 
 ## 3. Fine-tune, evaluate and export
 
-First run a short separate smoke training job to check dependencies and shapes:
+The current workspace verifies the smoke-training path on CPU before any full run:
 
 ```bash
 python training/train_smolvla.py \
-  --dataset data/lerobot/train --steps 20 --batch-size 2 \
-  --output outputs/train_smoke --export outputs/model_smoke
+  --dataset data/lerobot/train --device cpu \
+  --output outputs/smolvla_multitask --export outputs/nx_multitask_v2 \
+  --steps 20 --batch-size 8 --workers 4 --seed 7
 ```
 
-A 20-step checkpoint is only an integration check, not a usable control policy.
-Then run the actual training job:
+This is an integration smoke test, not a usable control policy. The command above
+has already been run successfully in this workspace and produces a checkpoint plus
+an exported bundle under the output directories shown.
+
+For a longer CPU-only run, keep the same device override and increase the step
+count as needed:
 
 ```bash
 python training/train_smolvla.py \
-  --dataset data/lerobot/train --steps 20000 --batch-size 8 \
-  --output outputs/smolvla --export outputs/nx_model
+  --dataset data/lerobot/train --device cpu \
+  --output outputs/smolvla_multitask --export outputs/nx_multitask_v2 \
+  --steps 5000 --batch-size 8 --workers 4 --seed 7
 ```
 
-Reduce batch size if memory is insufficient. 20,000 steps is a starting setting,
-not a guaranteed optimum. The first run downloads pretrained SmolVLA/VLM/tokenizer
-assets and requires internet access. The launcher uses upstream LeRobot training,
-overrides input/output features for this Franka scene, and disables Hub/W&B uploads.
+On a compatible CUDA host, omit `--device cpu` and use the same dataset/output
+paths. The first run downloads pretrained SmolVLA/VLM/tokenizer assets and
+requires internet access. The launcher uses upstream LeRobot training, overrides
+input/output features for this Franka scene, and disables Hub/W&B uploads.
 
-The exported `outputs/nx_model` includes policy weights/config, preprocessing and
+The exported bundle includes policy weights/config, preprocessing and
 postprocessing files, normalization tensors, and `scene_contract.json`. Copy the
-**entire directory**, not just model weights. Base SO-101 normalization statistics
-must not be substituted for your Franka statistics.
+**entire directory**, not just model weights. The actual output bundle is created
+under `outputs/nx_multitask_v2` when the export step succeeds.
 
 Optional held-out loss:
 
 ```bash
-python training/evaluate_loss.py --model outputs/nx_model --dataset data/lerobot/val
+python training/evaluate_loss.py --model outputs/nx_multitask_v2 --dataset data/lerobot/val
 ```
 
 This evaluates a configurable number of batches. Flow-matching loss is stochastic
