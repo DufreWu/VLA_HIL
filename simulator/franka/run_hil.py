@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 from common.contract import (FPS, TASK, contract, check_contract, encode_image,
                              action_chunk, trim_chunk, write_json, success_metrics)
+from simulator.evaluation.metrics import ActionQueueTracker
 
 
 def request_json(url, payload=None, timeout=30):
@@ -68,6 +69,9 @@ def main():
             starvation = 0
             rtts, inference_times = [], []
             started = time.monotonic()
+            tracker = ActionQueueTracker(execute_steps=a.execute_steps,
+                                        max_queue_len=max(2, a.execute_steps),
+                                        sample_period_s=1.0/FPS)
             log_path = a.output/f'episode_{ep:04d}.jsonl'
             with log_path.open('w') as log:
                 def event(value):
@@ -93,10 +97,12 @@ def main():
                             raise RuntimeError('Invalid observation sequence in response')
                         actions = action_chunk(result['actions'])
                         if a.mode == 'sync':
-                            selected, skipped = actions[:a.execute_steps], 0
+                            selected = actions[:a.execute_steps].copy()
+                            skipped = 0
                         else:
                             selected, skipped = trim_chunk(actions, source, tick, a.execute_steps)
-                        # Replace future slots; never append a complete stale chunk.
+                            if skipped:
+                                tracker.stale_action_events += skipped
                         if len(selected):
                             queue = deque(selected)
                         rtts.append(rtt); inference_times.append(result['inference_ms'])
@@ -106,16 +112,17 @@ def main():
                         target = queue.popleft()
                         starvation = 0
                     else:
-                        # Queue exhausted: capture measured position once, then hold it.
                         if starvation == 0:
                             hold = scene.state().copy()
                         target = hold
                         starvation += 1
+                        tracker.record_queue_exhaustion(1/FPS)
                         if starvation >= 5*FPS:
                             raise RuntimeError('No usable actions for 5 simulation seconds; '
                                                'inspect latency/horizon, model server, and logs.')
                     applied, clipped = scene.apply(target)
                     clamped += int(clipped)
+                    tracker.record_clipped(int(clipped))
                     event(dict(type='action', tick=tick, sim_time=tick/FPS,
                                state=scene.state().tolist(), target=applied.tolist(),
                                clipped=clipped, queue_length=len(queue), holding=not bool(queue) and starvation > 0))
@@ -126,7 +133,9 @@ def main():
                     if a.mode == 'continuous':
                         deadline = started + (tick+1)/FPS
                         remaining = deadline-time.monotonic()
-                        if remaining > 0:
+                        if remaining < 0:
+                            tracker.record_deadline_miss()
+                        else:
                             time.sleep(remaining)
                 # Drain the old episode before resetting the scene.
                 if future is not None:
@@ -135,7 +144,12 @@ def main():
             metrics = success_metrics(positions, fingers, lifted)
             metrics.update(episode=ep, initial=initial, mode=a.mode, mock=health['mock'],
                            sim_seconds=len(positions)/FPS, wall_seconds=elapsed,
-                           real_time_factor=(len(positions)/FPS)/elapsed, clipped_actions=clamped,
+                           real_time_factor=(len(positions)/FPS)/elapsed,
+                           clipped_actions=tracker.clipped_actions,
+                           queue_starvation_events=tracker.queue_starvation_events,
+                           stale_action_events=tracker.stale_action_events,
+                           holding_duration_s=tracker.holding_duration_s,
+                           missed_control_deadlines=tracker.missed_control_deadlines,
                            mean_rtt_ms=float(np.mean(rtts)) if rtts else None,
                            p95_rtt_ms=float(np.percentile(rtts, 95)) if rtts else None,
                            mean_inference_ms=float(np.mean(inference_times)) if inference_times else None)

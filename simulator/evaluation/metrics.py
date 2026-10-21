@@ -27,10 +27,12 @@ class TaskConfig:
 def average_joint_jerk(joint_positions, dt_s, smoothing_window=1):
     """Compute AJJ from the third derivative of seven arm-joint positions.
 
-    We use a centered finite-difference estimate of the third derivative on the
-    measured joint trajectory. A unit-sum moving average is used only when a
-    non-default smoothing window is requested; the default uses the raw samples to
-    preserve the exact scale implied by the metric definition.
+    The implementation uses a second-order central finite-difference estimate
+    for the first, second and third derivatives with respect to simulation time,
+    then takes the RMS jerk per joint and averages across the seven arm DoFs.
+    For a small amount of noise, a short moving-average filter can be applied by
+    setting a smoothing_window greater than one. All experiments should use the
+    same settings for a fair comparison.
     """
     q = np.asarray(joint_positions, dtype=np.float64)
     if q.ndim != 2 or q.shape[1] != 7:
@@ -55,6 +57,50 @@ def average_joint_jerk(joint_positions, dt_s, smoothing_window=1):
     d3 = np.gradient(d2, dt_s, axis=0, edge_order=2)
     rms_per_joint = np.sqrt(np.mean(d3 ** 2, axis=0))
     return float(np.mean(rms_per_joint))
+
+
+class ActionQueueTracker:
+    """Track stale action chunks, queue starvation and holding duration."""
+
+    def __init__(self, execute_steps=1, max_queue_len=10, sample_period_s=1/60.0):
+        self.execute_steps = int(execute_steps)
+        self.max_queue_len = int(max_queue_len)
+        self.sample_period_s = float(sample_period_s)
+        self.stale_action_events = 0
+        self.queue_starvation_events = 0
+        self.holding_duration_s = 0.0
+        self.clipped_actions = 0
+        self.missed_control_deadlines = 0
+        self._holding_since = None
+
+    def accept_chunk(self, actions, source_tick, current_tick):
+        arr = np.asarray(actions, dtype=np.float64)
+        if arr.ndim != 2 or arr.shape[1] != 9:
+            raise ValueError('Expected action chunk with shape [N, 9].')
+        age = max(0, int(current_tick) - int(source_tick))
+        self.stale_action_events += age
+        usable = arr[age:age + self.execute_steps].copy() if age < len(arr) else np.empty((0, 9), dtype=np.float64)
+        return usable, age
+
+    def record_queue_exhaustion(self, duration_s):
+        duration_s = float(duration_s)
+        if not math.isfinite(duration_s) or duration_s < 0:
+            raise ValueError('duration_s must be finite and non-negative.')
+        self.queue_starvation_events += 1
+        self.holding_duration_s += duration_s
+
+    def record_deadline_miss(self):
+        self.missed_control_deadlines += 1
+
+    def record_clipped(self, count):
+        self.clipped_actions += int(count)
+
+    def as_dict(self):
+        return dict(stale_action_events=self.stale_action_events,
+                    queue_starvation_events=self.queue_starvation_events,
+                    holding_duration_s=self.holding_duration_s,
+                    clipped_actions=self.clipped_actions,
+                    missed_control_deadlines=self.missed_control_deadlines)
 
 
 def _percentile_higher(values, percent):

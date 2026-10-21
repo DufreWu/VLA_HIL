@@ -1,7 +1,8 @@
 import unittest
 import numpy as np
 from simulator.evaluation.metrics import (TaskConfig, EpisodeMetrics, summarize,
-                                         average_joint_jerk, summarize_inference_samples)
+                                         average_joint_jerk, summarize_inference_samples,
+                                         ActionQueueTracker)
 from simulator.evaluation.contacts import unintended
 
 
@@ -107,6 +108,15 @@ class MetricsTests(unittest.TestCase):
         self.assertAlmostEqual(stats['mean_inference_ms'], 33.6)
         self.assertAlmostEqual(stats['p95_inference_ms'], 100.0)
         self.assertEqual(stats['number_of_inference_requests'], 5)
+
+    def test_action_queue_tracker_rejects_stale_and_tracks_starvation(self):
+        tracker = ActionQueueTracker(execute_steps=2, max_queue_len=3, sample_period_s=1/60)
+        tracker.accept_chunk(np.zeros((4, 9), dtype=np.float64), source_tick=10, current_tick=12)
+        self.assertEqual(tracker.stale_action_events, 2)
+        tracker.record_queue_exhaustion(duration_s=0.25)
+        tracker.record_queue_exhaustion(duration_s=0.25)
+        self.assertEqual(tracker.queue_starvation_events, 2)
+        self.assertGreaterEqual(tracker.holding_duration_s, 0.5)
 
 
 if __name__ == '__main__':
