@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +17,7 @@ from PIL import Image
 from common.contract import (contract, check_contract, action_chunk, trim_chunk,
                              encode_image, decode_image, success_metrics, TARGET, FPS,
                              task_instruction, multitask_contract)
-from simulator.evaluation.policies import RemotePolicy
+from simulator.evaluation.policies import RemotePolicy, LocalPolicy
 from training.convert_dataset import validate_episode
 
 
@@ -134,6 +135,67 @@ class PipelineTests(unittest.TestCase):
         finally:
             process.terminate(); process.wait(timeout=5)
             policy.executor.shutdown(wait=True, cancel_futures=True)
+
+    def test_inflight_remote_request_does_not_count_as_starvation(self):
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
+        process = subprocess.Popen([sys.executable, str(ROOT/'jetson_orin_nx/policy_server.py'),
+                    '--mock', '--host', '127.0.0.1', '--port', str(port)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        base = f'http://127.0.0.1:{port}'
+        try:
+            for _ in range(100):
+                try:
+                    with urllib.request.urlopen(base+'/health', timeout=.2) as r:
+                        self.assertTrue(json.load(r)['mock'])
+                    break
+                except (OSError, urllib.error.URLError):
+                    if process.poll() is not None: self.fail('Server exited')
+                    time.sleep(.02)
+            else: self.fail('Server did not start')
+
+            class DummyScene:
+                def state(self):
+                    return np.zeros(9, dtype=np.float32)
+                def observation(self):
+                    return np.zeros(9, dtype=np.float32), np.zeros((256, 256, 3), dtype=np.uint8)
+
+            policy = RemotePolicy(base, execute_steps=10, allow_mock=True,
+                                  mode='continuous', prefetch=3)
+            policy.reset(DummyScene(), 'grasping', [.45, -.2, .0258], [.45, 0.0, .0258])
+            for _ in range(3):
+                target = policy.act(0.0)
+                self.assertEqual(target.shape, (9,))
+                self.assertTrue(np.isfinite(target).all())
+            self.assertEqual(policy.hold_steps, 0)
+            self.assertEqual(policy.starvation_events, 0)
+        finally:
+            process.terminate(); process.wait(timeout=5)
+            if 'policy' in locals():
+                policy.executor.shutdown(wait=True, cancel_futures=True)
+
+    def test_local_policy_uses_local_engine(self):
+        class DummyScene:
+            def state(self):
+                return np.zeros(9, dtype=np.float32)
+            def observation(self):
+                return np.zeros(9, dtype=np.float32), np.zeros((256, 256, 3), dtype=np.uint8)
+
+        class DummyEngine:
+            def __init__(self, model, device):
+                self.model = model
+                self.device = device
+            def infer(self, request):
+                return np.tile(np.asarray(request['state'], dtype=np.float32), (10, 1)), 0.0
+
+        with mock.patch('simulator.evaluation.policies.Engine', DummyEngine):
+            policy = LocalPolicy(model='/tmp/fake-model', device='cpu', execute_steps=10,
+                                 mode='sync', prefetch=3)
+            policy.reset(DummyScene(), 'grasping', [.45, -.2, .0258], [.45, 0.0, .0258])
+            target = policy.act(0.0)
+            self.assertEqual(target.shape, (9,))
+            self.assertTrue(np.isfinite(target).all())
+            self.assertEqual(policy.mode, 'sync')
 
     def test_multitask_contract_and_task_instructions(self):
         c = multitask_contract()

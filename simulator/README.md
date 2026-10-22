@@ -22,35 +22,42 @@ The virtual environment and NVIDIA assets are installed separately from this ZIP
 
 ## Running tasks
 
-Run commands from the package root. Output directories must be new.
+Run commands from the project root. Output directories must be new.
 
 ```bash
 # Inspect one episode of each task.
 python simulator/evaluate.py --task both --episodes 1 --save-preview \
   --output outputs/smoke
 
-# Run the 100-episode evaluation for each task.
-simulator/run.sh --headless --task both --episodes 100 --seed 42 \
-  --output outputs/evaluation
+# Run a single-task remote evaluation with a live model server.
+python simulator/evaluate.py --task grasping --policy remote --server http://127.0.0.1:8080 \
+  --mode sync --episodes 5 --execute-steps 10 --timeout 20 --output outputs/evaluation_grasping
 
-# Run one task with explicit timing and contact thresholds.
-simulator/run.sh --headless --task pushing --episodes 10 --timeout 30 \
-  --hold 1 --collision-force 1 --output outputs/pushing
+# Run local inference directly from a trained checkpoint on this machine.
+# IMPORTANT: do this in the training environment, not the Isaac Sim environment.
+python simulator/evaluate.py --task grasping --policy local --model outputs/nx_multitask_v2 \
+  --device cpu --mode sync --episodes 2 --execute-steps 10 --output outputs/evaluation_local
 
-# Continuous HIL, mock transport test before Jetson inference.
+# Run a continuous remote evaluation on the same model server.
+python simulator/evaluate.py --task both --policy remote --server http://127.0.0.1:8080 \
+  --mode continuous --episodes 2 --execute-steps 10 --prefetch 5 --output outputs/evaluation_continuous
+
+# Mock transport test before Jetson inference.
 python jetson_orin_nx/policy_server.py --mock --host 127.0.0.1 --port 8081
 python simulator/evaluate.py --task grasping --policy remote --server http://127.0.0.1:8081 \
   --mode continuous --allow-mock --episodes 1 --output outputs/hil_grasping_mock
 
-# Continuous HIL on a real Jetson Orin NX.
+# Remote evaluation against a real server.
 python simulator/evaluate.py --task grasping --policy remote --server http://JETSON_IP:8080 \
   --mode continuous --episodes 10 --output outputs/hil_grasping
 python simulator/evaluate.py --task pushing --policy remote --server http://JETSON_IP:8080 \
   --mode continuous --episodes 10 --output outputs/hil_pushing
 ```
 
-`simulator/run.sh` uses `.venv-isaacsim/bin/python`; direct Python commands use the
-active environment. `--save-preview` exports a 2 Hz camera GIF and a final PNG.
+Direct Python commands use the active environment. `--save-preview` exports a 2 Hz
+camera GIF and a final PNG. For the current project, `--mode continuous` is the
+relevant remote-control mode; the remote action queue keeps at most one in-flight
+request and trims stale action slots instead of blindly appending future actions.
 
 The scene contains a Franka Panda, a 5 cm cube and a flat table at z=0. Initial
 cube positions are sampled from x=[0.42,0.48] and y=[-0.22,-0.18] m. The pushing
@@ -111,27 +118,34 @@ Arm units are radians; finger units are metres.
 
 ```bash
 # On the inference host, using a task-appropriate trained checkpoint:
-python jetson_orin_nx/policy_server.py --model outputs/model --host 0.0.0.0
+python jetson_orin_nx/policy_server.py --model outputs/nx_multitask_v2 --host 0.0.0.0 --port 8080 --device cuda
 
 # On the simulation host:
-simulator/run.sh --headless --policy remote --server http://JETSON_IP:8080 \
-  --task grasping --episodes 100 --output outputs/remote_grasping
+python simulator/evaluate.py --task both --policy remote --server http://JETSON_IP:8080 \
+  --mode sync --episodes 5 --output outputs/remote_grasping
 ```
 
-The server requires the model dependencies in `requirements-training.txt` and
-a CUDA PyTorch build compatible with its host. Jetson requires an ARM64 build
+The server requires the model dependencies in `requirements-training.txt` and a
+CUDA PyTorch build compatible with its host. Jetson requires an ARM64 build
 compatible with the installed JetPack. Keep training dependencies separate from
 the Isaac Sim environment.
 
-The transport retains the project's pick-and-place scene contract. Task-specific
-training and validation are required for grasping and pushing checkpoints.
-Pushing communicates the target through the camera marker and task instruction;
-there is no numeric target field in the current HTTP request.
+The current project uses a multi-task scene contract with supported tasks
+`grasping` and `pushing`. The task is passed through the HTTP request as a
+natural-language instruction, and the action chunk is trimmed by simulation time
+when the queue is behind. In continuous mode, stale slots are skipped and the
+next valid chunk replaces the expired queued actions; the queue does not grow
+without bound while inference is delayed.
 
-Remote evaluation is synchronous: physics pauses during inference. Mean HTTP
-round-trip time and server-reported inference time are logged separately from
-simulation completion time. `--allow-mock` enables hold-joint transport tests.
-The included scripted results do not measure trained VLA or Jetson performance.
+For local execution, `--policy local` loads a checkpoint in-process through the
+same `Engine` used by the HTTP server. This is useful for smoke tests or when the
+inference host is the same machine as the simulator. It must be run in the
+training environment, not the Isaac Sim environment. The Isaac Sim Python has a
+separate environment and is not compatible with the LeRobot 0.4.3 stack used by
+this model. Remote evaluation does not require the physics thread to wait for each
+request in continuous mode. Mean HTTP round-trip time and server-reported
+inference time are logged separately from simulation completion time.
+`--allow-mock` enables hold-joint transport tests.
 
 Custom policies can be supplied with `--policy package.module:PolicyClass`.
 The class needs a no-argument constructor, `reset(scene, task, initial, target)`,

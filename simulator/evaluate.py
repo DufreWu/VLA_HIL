@@ -13,8 +13,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from simulator.evaluation.metrics import TaskConfig, EpisodeMetrics, average_joint_jerk, summarize
 
 
+def _json_default(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple):
+        return list(value)
+    if hasattr(value, 'tolist'):
+        try:
+            return value.tolist()
+        except TypeError:
+            pass
+    raise TypeError(f'Object of type {value.__class__.__name__} is not JSON serializable')
+
+
 def save_json(path, value):
-    path.write_text(json.dumps(value, indent=2, allow_nan=False)+'\n')
+    path.write_text(json.dumps(value, indent=2, allow_nan=False, default=_json_default)+'\n')
 
 
 def parse_args():
@@ -28,8 +41,10 @@ def parse_args():
     p.add_argument('--output', type=Path, default=Path('outputs/evaluation'))
     p.add_argument('--headless', action='store_true')
     p.add_argument('--save-preview', action='store_true', help='Save camera GIFs at 2 Hz for motion inspection')
-    p.add_argument('--policy', default='scripted', help='scripted, remote, or module:Class with reset/act methods')
+    p.add_argument('--policy', default='scripted', help='scripted, remote, local, or module:Class with reset/act methods')
     p.add_argument('--server', default='http://127.0.0.1:8080')
+    p.add_argument('--model', type=Path, default=None, help='Local model directory for --policy local')
+    p.add_argument('--device', default='cpu', help='Model device for --policy local (cpu/cuda)')
     p.add_argument('--mode', choices=['sync', 'continuous'], default='sync')
     p.add_argument('--execute-steps', type=int, default=10)
     p.add_argument('--prefetch', type=int, default=5)
@@ -52,6 +67,12 @@ def main():
         from simulator.evaluation.policies import RemotePolicy
         policy = RemotePolicy(args.server, args.execute_steps, args.allow_mock,
                               mode=args.mode, prefetch=args.prefetch)
+    elif args.policy == 'local':
+        if args.model is None:
+            raise ValueError('--model is required when --policy local is used')
+        from simulator.evaluation.policies import LocalPolicy
+        policy = LocalPolicy(args.model, device=args.device, execute_steps=args.execute_steps,
+                             mode=args.mode, prefetch=args.prefetch)
     elif args.policy == 'scripted':
         from simulator.evaluation.controllers import ScriptedPolicy
         policy = ScriptedPolicy()
