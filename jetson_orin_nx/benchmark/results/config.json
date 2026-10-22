@@ -1,0 +1,108 @@
+{
+  "experiment": {
+    "collect_energy": true,
+    "cpu_cores_num": 8,
+    "cpu_freqs": [
+      422400,
+      729600,
+      1036800,
+      1344000,
+      1651200,
+      1984000
+    ],
+    "device": "cuda",
+    "gpu_freqs": [
+      408000000,
+      510000000,
+      612000000,
+      714000000,
+      816000000,
+      918000000
+    ],
+    "inference_hz": null,
+    "output_dir": "jetson_orin_nx/benchmark/results",
+    "physics_hz": 60,
+    "test_runs": 20,
+    "warmup_runs": 20
+  },
+  "input": {
+    "camera_keys": [
+      "observation.images.camera1",
+      "observation.images.camera2",
+      "observation.images.camera3"
+    ],
+    "image_size": [
+      256,
+      256
+    ],
+    "state_dim": 9,
+    "task_string": "Pick up the red cube and place it at the target on the table."
+  },
+  "model": {
+    "device": "cuda",
+    "exists": true,
+    "name": "nx_multitask_v2",
+    "path": "/home/user/Documents/Github/VLA_HIL/outputs/nx_multitask_v2",
+    "task": "Pick up the red cube and place it at the target on the table."
+  },
+  "nvpmodel": {
+    "power_sensor_path": "/sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon3",
+    "status": "NV Power Mode: MAXN\n0"
+  },
+  "thermal": [
+    {
+      "name": "thermal_zone0",
+      "temp_c": 48.281,
+      "temp_milli_c": 48281.0,
+      "type": "cpu-thermal"
+    },
+    {
+      "name": "thermal_zone1",
+      "temp_c": 45.75,
+      "temp_milli_c": 45750.0,
+      "type": "gpu-thermal"
+    },
+    {
+      "name": "thermal_zone2",
+      "temp_c": 46.5,
+      "temp_milli_c": 46500.0,
+      "type": "cv0-thermal"
+    },
+    {
+      "name": "thermal_zone3",
+      "temp_c": 47.093,
+      "temp_milli_c": 47093.0,
+      "type": "cv1-thermal"
+    },
+    {
+      "name": "thermal_zone4",
+      "temp_c": 45.906,
+      "temp_milli_c": 45906.0,
+      "type": "cv2-thermal"
+    },
+    {
+      "name": "thermal_zone5",
+      "temp_c": 48.375,
+      "temp_milli_c": 48375.0,
+      "type": "soc0-thermal"
+    },
+    {
+      "name": "thermal_zone6",
+      "temp_c": 48.031,
+      "temp_milli_c": 48031.0,
+      "type": "soc1-thermal"
+    },
+    {
+      "name": "thermal_zone7",
+      "temp_c": 46.437,
+      "temp_milli_c": 46437.0,
+      "type": "soc2-thermal"
+    },
+    {
+      "name": "thermal_zone8",
+      "temp_c": 48.375,
+      "temp_milli_c": 48375.0,
+      "type": "tj-thermal"
+    }
+  ]
+}
