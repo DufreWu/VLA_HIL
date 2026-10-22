@@ -9,3 +9,6 @@ __pycache__/
 venv/
 
 .DS_Store
+
+jetson_orin_nx/benchmark/results/power_samples.csv
+
