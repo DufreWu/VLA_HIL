@@ -19,26 +19,82 @@
       816000000,
       918000000
     ],
-    "inference_hz": null,
     "output_dir": "jetson_orin_nx/benchmark/results",
-    "physics_hz": 60,
-    "test_runs": 20,
+    "repetitions": 3,
+    "samples_per_config": 20,
+    "sampling_interval_s": 0.002,
+    "seed": 7,
+    "task_selection": "both",
+    "timeout_s": 30.0,
     "warmup_runs": 20
   },
   "input": {
     "camera_keys": [
-      "observation.images.camera1",
-      "observation.images.camera2",
-      "observation.images.camera3"
+      "observation.images.camera1"
     ],
     "image_size": [
       256,
       256
     ],
     "state_dim": 9,
+    "task_instructions": {
+      "grasping": "Grasp the red cube and lift it above the table.",
+      "pushing": "Push the red cube to the green target on the table."
+    },
     "task_string": "Pick up the red cube and place it at the target on the table."
   },
   "model": {
+    "contract": {
+      "action_dim": 9,
+      "action_semantics": "absolute_joint_position_targets",
+      "camera_eye": [
+        1.15,
+        -0.85,
+        0.95
+      ],
+      "camera_target": [
+        0.4,
+        0.0,
+        0.15
+      ],
+      "fps": 20,
+      "hand_offset_m": 0.1,
+      "image_key": "observation.images.camera1",
+      "image_size": [
+        256,
+        256
+      ],
+      "joints": [
+        "panda_joint1",
+        "panda_joint2",
+        "panda_joint3",
+        "panda_joint4",
+        "panda_joint5",
+        "panda_joint6",
+        "panda_joint7",
+        "panda_finger_joint1",
+        "panda_finger_joint2"
+      ],
+      "schema": "franka_joint_targets_v1",
+      "state_dim": 9,
+      "target": [
+        0.45,
+        0.2,
+        0.0258
+      ],
+      "task": "Pick up the red cube and place it at the target on the table.",
+      "units": [
+        "rad",
+        "rad",
+        "rad",
+        "rad",
+        "rad",
+        "rad",
+        "rad",
+        "m",
+        "m"
+      ]
+    },
     "device": "cuda",
     "exists": true,
     "name": "nx_multitask_v2",
@@ -52,8 +108,8 @@
   "thermal": [
     {
       "name": "thermal_zone0",
-      "temp_c": 48.281,
-      "temp_milli_c": 48281.0,
+      "temp_c": 48.625,
+      "temp_milli_c": 48625.0,
       "type": "cpu-thermal"
     },
     {
@@ -64,44 +120,44 @@
     },
     {
       "name": "thermal_zone2",
-      "temp_c": 46.5,
-      "temp_milli_c": 46500.0,
+      "temp_c": 46.437,
+      "temp_milli_c": 46437.0,
       "type": "cv0-thermal"
     },
     {
       "name": "thermal_zone3",
-      "temp_c": 47.093,
-      "temp_milli_c": 47093.0,
+      "temp_c": 47.031,
+      "temp_milli_c": 47031.0,
       "type": "cv1-thermal"
     },
     {
       "name": "thermal_zone4",
-      "temp_c": 45.906,
-      "temp_milli_c": 45906.0,
+      "temp_c": 46.093,
+      "temp_milli_c": 46093.0,
       "type": "cv2-thermal"
     },
     {
       "name": "thermal_zone5",
-      "temp_c": 48.375,
-      "temp_milli_c": 48375.0,
+      "temp_c": 48.625,
+      "temp_milli_c": 48625.0,
       "type": "soc0-thermal"
     },
     {
       "name": "thermal_zone6",
-      "temp_c": 48.031,
-      "temp_milli_c": 48031.0,
+      "temp_c": 47.968,
+      "temp_milli_c": 47968.0,
       "type": "soc1-thermal"
     },
     {
       "name": "thermal_zone7",
-      "temp_c": 46.437,
-      "temp_milli_c": 46437.0,
+      "temp_c": 46.468,
+      "temp_milli_c": 46468.0,
       "type": "soc2-thermal"
     },
     {
       "name": "thermal_zone8",
-      "temp_c": 48.375,
-      "temp_milli_c": 48375.0,
+      "temp_c": 48.625,
+      "temp_milli_c": 48625.0,
       "type": "tj-thermal"
     }
   ]

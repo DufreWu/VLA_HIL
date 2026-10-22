@@ -5,8 +5,10 @@ import argparse
 import csv
 import json
 import os
+import random
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -18,8 +20,9 @@ import numpy as np
 import torch
 import yaml
 
-from common.contract import TASK
-from jetson_orin_nx import Jetson_Orin_NX
+from common.contract import IMAGE_KEY, RESOLUTION, TASK, contract, encode_image
+from jetson_orin_nx.benchmark.jetson_orin_nx import Jetson_Orin_NX
+from jetson_orin_nx.policy_server import Engine
 
 CONFIG_PATH = ROOT / "jetson_orin_nx" / "benchmark" / "jetson_orin_nx.yaml"
 
@@ -29,8 +32,13 @@ with CONFIG_PATH.open("r", encoding="utf-8") as f:
 CPU_FREQS = config["jetson_orin_nx_16g"]["cpu_freqs"]
 CPU_CORE_NUM = config["jetson_orin_nx_16g"]["cpu_cores_num"]
 GPU_FREQS = config["jetson_orin_nx_16g"]["gpu_freqs"]
-WARMUP_RUNS = 20
-TEST_RUNS = 100
+DEFAULT_WARMUP = 20
+DEFAULT_SAMPLES = 20
+DEFAULT_REPETITIONS = 3
+TASKS = {
+    "grasping": "Grasp the red cube and lift it above the table.",
+    "pushing": "Push the red cube to the green target on the table.",
+}
 
 
 def read_text(path: str | os.PathLike[str]) -> str | None:
@@ -66,7 +74,6 @@ def read_vdd_in_power(ina_path: str | None) -> float | None:
     current_ma = read_float(os.path.join(ina_path, "curr1_input"))
     if voltage_v is None or current_ma is None:
         return None
-    # INA3221 exposes voltage in mV and current in mA; convert to watts.
     return (voltage_v / 1000.0) * (current_ma / 1000.0)
 
 
@@ -89,40 +96,68 @@ def read_thermal_sensors() -> list[dict[str, Any]]:
     return entries
 
 
-def load_policy(model_path, device):
-    from lerobot.configs.policies import PreTrainedConfig
-    from lerobot.policies.factory import make_pre_post_processors
-    from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
-
-    config = PreTrainedConfig.from_pretrained(model_path)
-    config.device = device
-    policy = SmolVLAPolicy.from_pretrained(model_path, config=config)
-    policy.to(device)
-    policy.eval()
-
-    preprocessor, _ = make_pre_post_processors(
-        policy.config,
-        pretrained_path=str(model_path),
-        preprocessor_overrides={"device_processor": {"device": device}},
-    )
-    return policy, preprocessor
+def integrate_power_samples(samples: list[dict[str, Any]]) -> float | None:
+    if not samples:
+        return None
+    valid = sorted((s for s in samples if s.get("power_w") is not None), key=lambda x: float(x["timestamp_monotonic_s"]))
+    if len(valid) < 2:
+        return None
+    energy = 0.0
+    for prev, curr in zip(valid, valid[1:]):
+        dt = float(curr["timestamp_monotonic_s"]) - float(prev["timestamp_monotonic_s"])
+        if dt <= 0:
+            continue
+        energy += 0.5 * (float(prev["power_w"]) + float(curr["power_w"])) * dt
+    return float(energy)
 
 
-@torch.inference_mode()
-def inference(policy, observation, preprocessor=None):
-    policy.reset()
-    batch = observation if preprocessor is None else preprocessor(observation)
-    return policy.select_action(batch)
+def make_task_cycle(task_names: list[str]) -> list[str]:
+    if not task_names:
+        return ["grasping"]
+    return list(task_names)
 
 
-def create_dummy_observation(device):
+def build_observation(device: str, task_name: str, seed: int) -> dict[str, Any]:
+    rng = random.Random(seed)
+    rgb = np.fromiter((rng.randrange(256) for _ in range(256 * 256 * 3)), dtype=np.uint8).reshape(256, 256, 3)
+    state = np.zeros(9, dtype=np.float32)
     return {
-        "observation.state": torch.zeros(1, 9, dtype=torch.float32, device=device),
-        "observation.images.camera1": torch.rand(1, 3, 256, 256, dtype=torch.float32, device=device),
-        "observation.images.camera2": torch.rand(1, 3, 256, 256, dtype=torch.float32, device=device),
-        "observation.images.camera3": torch.rand(1, 3, 256, 256, dtype=torch.float32, device=device),
-        "task": TASK,
+        "observation.state": torch.from_numpy(state.copy()).to(device),
+        IMAGE_KEY: torch.from_numpy(np.transpose(rgb, (2, 0, 1))).float().to(device) / 255.0,
+        "task": TASKS[task_name],
     }
+
+
+def validate_frequency_setting(board: Jetson_Orin_NX, cpu_hz: int, gpu_hz: int, cpu_idx: int = 0) -> bool:
+    actual_cpu = board.read_cpu_freq(cpu_idx)
+    actual_gpu = board.read_gpu_freq()
+    if actual_cpu is None or actual_gpu is None:
+        return False
+    if abs(actual_cpu - cpu_hz) > max(20000, int(cpu_hz * 0.02)):
+        return False
+    if abs(actual_gpu - gpu_hz) > max(5000000, int(gpu_hz * 0.02)):
+        return False
+    return True
+
+
+def collect_power_samples(duration_s: float, sample_interval_s: float, ina_path: str | None, sample_id: str | int) -> list[dict[str, Any]]:
+    if ina_path is None:
+        return []
+    samples: list[dict[str, Any]] = []
+    start = time.monotonic()
+    deadline = start + max(duration_s, 0.0)
+    while time.monotonic() < deadline:
+        ts = time.monotonic()
+        power_w = read_vdd_in_power(ina_path)
+        if power_w is not None:
+            samples.append({
+                "sample_id": str(sample_id),
+                "timestamp_monotonic_s": ts,
+                "power_w": power_w,
+                "source": "VDD_IN",
+            })
+        time.sleep(max(sample_interval_s, 0.001))
+    return samples
 
 
 def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
@@ -132,19 +167,21 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> 
         writer.writerows(rows)
 
 
-def build_config_json(model_path: Path, device: str, collect_energy: bool, warmup: int, runs: int, output_dir: Path) -> dict[str, Any]:
-    cfg = {
+def build_config_json(model_path: Path, output_dir: Path, args: argparse.Namespace, device: str, thermal: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
         "model": {
             "path": str(model_path),
             "name": model_path.name,
             "exists": model_path.exists(),
             "device": device,
             "task": TASK,
+            "contract": contract(),
         },
         "input": {
             "state_dim": 9,
-            "image_size": [256, 256],
-            "camera_keys": ["observation.images.camera1", "observation.images.camera2", "observation.images.camera3"],
+            "image_size": list(RESOLUTION),
+            "camera_keys": [IMAGE_KEY],
+            "task_instructions": TASKS,
             "task_string": TASK,
         },
         "nvpmodel": {
@@ -153,212 +190,248 @@ def build_config_json(model_path: Path, device: str, collect_energy: bool, warmu
         },
         "experiment": {
             "output_dir": str(output_dir),
-            "collect_energy": collect_energy,
-            "warmup_runs": warmup,
-            "test_runs": runs,
-            "cpu_freqs": list(CPU_FREQS),
-            "gpu_freqs": list(GPU_FREQS),
-            "cpu_cores_num": CPU_CORE_NUM,
+            "collect_energy": bool(args.collect_energy),
+            "warmup_runs": int(args.warmup),
+            "samples_per_config": int(args.samples_per_config),
+            "repetitions": int(args.repetitions),
+            "seed": int(args.seed),
+            "cpu_freqs": [int(v) for v in CPU_FREQS],
+            "gpu_freqs": [int(v) for v in GPU_FREQS],
+            "cpu_cores_num": int(CPU_CORE_NUM),
             "device": device,
-            "physics_hz": 60,
-            "inference_hz": None,
+            "task_selection": args.task,
+            "timeout_s": float(args.timeout_s),
+            "sampling_interval_s": float(args.sampling_interval_s),
         },
-        "thermal": read_thermal_sensors(),
+        "thermal": thermal,
     }
-    return cfg
+
+
+def summarize_repetitions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    out: list[dict[str, Any]] = []
+    grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (
+            row["config_id"],
+            row["requested_cpu_mhz"],
+            row["requested_gpu_mhz"],
+            row["task_name"],
+        )
+        grouped.setdefault(key, []).append(row)
+    for key, items in grouped.items():
+        inference_ms = np.asarray([float(x["inference_ms"]) for x in items if x["inference_ms"] is not None], dtype=np.float64)
+        power_w = np.asarray([float(x["power_w"]) for x in items if x["power_w"] is not None], dtype=np.float64)
+        energy_j = np.asarray([float(x["energy_j"]) for x in items if x["energy_j"] is not None], dtype=np.float64)
+        edp = energy_j * (inference_ms / 1000.0) if energy_j.size and inference_ms.size else np.asarray([], dtype=np.float64)
+        out.append({
+            "config_id": key[0],
+            "requested_cpu_mhz": key[1],
+            "requested_gpu_mhz": key[2],
+            "task_name": key[3],
+            "mean_inference_ms": float(np.mean(inference_ms)) if inference_ms.size else None,
+            "p95_inference_ms": float(np.percentile(inference_ms, 95)) if inference_ms.size else None,
+            "mean_power_w": float(np.mean(power_w)) if power_w.size else None,
+            "mean_energy_j": float(np.mean(energy_j)) if energy_j.size else None,
+            "energy_delay_product_j_s": float(np.mean(edp)) if edp.size else None,
+            "n_samples": int(len(items)),
+        })
+    return out
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=str(ROOT / "outputs" / "nx_model"))
-    parser.add_argument("--output", default=str(ROOT / "jetson_orin_nx" / "benchmark" / "results"), help="Directory for config.json, repetitions.csv, inferences.csv and power_samples.csv")
-    parser.add_argument("--collect-energy", action="store_true", help="Collect battery power samples and energy estimates from the INA sensor when available")
-    parser.add_argument("--warmup", type=int, default=WARMUP_RUNS)
-    parser.add_argument("--runs", type=int, default=TEST_RUNS)
-    parser.add_argument("--sampling-interval-s", type=float, default=0.005, help="Power-sample interval during each inference window")
+    parser = argparse.ArgumentParser(description="Jetson Orin NX DVFS benchmark for the VLA-HIL SmolVLA model.")
+    parser.add_argument("--model", default=str(ROOT / "outputs" / "nx_multitask_v2"), help="Path to the deployed model export bundle.")
+    parser.add_argument("--output", default=str(ROOT / "jetson_orin_nx" / "benchmark" / "results"), help="Directory for config.json, inferences.csv, power_samples.csv, repetitions.csv and summary.csv.")
+    parser.add_argument("--task", choices=["grasping", "pushing", "both"], default="both", help="Task instructions to benchmark for the multitask model.")
+    parser.add_argument("--samples-per-config", type=int, default=DEFAULT_SAMPLES, help="Inference samples recorded per configuration and repetition.")
+    parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS, help="Independent repetitions per configuration.")
+    parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP, help="Warmup iterations before timing starts.")
+    parser.add_argument("--collect-energy", action="store_true", help="Sample VDD_IN power during each inference and integrate energy over time.")
+    parser.add_argument("--seed", type=int, default=7, help="Random seed for configuration order and input generation.")
+    parser.add_argument("--sampling-interval-s", type=float, default=0.002, help="Power sampling interval in seconds.")
+    parser.add_argument("--timeout-s", type=float, default=30.0, help="Safety timeout for a full DVFS benchmark run.")
     args = parser.parse_args()
+
+    if args.samples_per_config < 1 or args.repetitions < 1:
+        raise ValueError("--samples-per-config and --repetitions must be positive integers.")
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model_path = Path(args.model).resolve()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model directory not found: {model_path}")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    policy, preprocessor = load_policy(str(model_path), device)
-    observation = create_dummy_observation(device)
+    engine = Engine(str(model_path), device)
 
-    nvml = None
-    if args.collect_energy:
-        try:
-            import pynvml
-            pynvml.nvmlInit()
-            nvml = pynvml
-        except Exception:
-            print("Warning: pynvml not available or NVML init failed; continuing without NVML energy collection")
-            nvml = None
-
-    edge_board = Jetson_Orin_NX(config)
-    ina_path = config["jetson_orin_nx_16g"].get("ina_path")
-    config_json = build_config_json(model_path, device, args.collect_energy, args.warmup, args.runs, output_dir)
+    thermal = read_thermal_sensors()
+    config_json = build_config_json(model_path, output_dir, args, device, thermal)
     (output_dir / "config.json").write_text(json.dumps(config_json, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
 
-    repetition_rows: list[dict[str, Any]] = []
+    task_names = ["grasping", "pushing"] if args.task == "both" else [args.task]
+    task_cycle = make_task_cycle(task_names)
+
+    board = Jetson_Orin_NX(config)
+    original_cpu_freqs = [board.read_cpu_freq(i) for i in range(CPU_CORE_NUM)]
+    original_gpu_freq = board.read_gpu_freq()
+    rng = random.Random(args.seed)
+    configs = [(cpu_hz, gpu_hz) for cpu_hz in CPU_FREQS for gpu_hz in GPU_FREQS]
+    rng.shuffle(configs)
+
     inference_rows: list[dict[str, Any]] = []
     power_rows: list[dict[str, Any]] = []
-    repeated_idx = 0
+    repetition_rows: list[dict[str, Any]] = []
+    summary_rows: list[dict[str, Any]] = []
 
-    for cpu_freq in CPU_FREQS:
-        for gpu_freq in GPU_FREQS:
+    try:
+        for config_id, (cpu_hz, gpu_hz) in enumerate(configs):
             for cpu_idx in range(CPU_CORE_NUM):
-                edge_board.set_cpu_freq(cpu_idx, cpu_freq)
-            edge_board.set_gpu_freq(gpu_freq)
+                board.set_cpu_freq(cpu_idx, cpu_hz)
+            board.set_gpu_freq(gpu_hz)
+            actual_cpu = board.read_cpu_freq(0)
+            actual_gpu = board.read_gpu_freq()
+            frequency_valid = validate_frequency_setting(board, cpu_hz, gpu_hz)
+            if not frequency_valid:
+                print(f"Warning: frequency request mismatch for config {config_id}: requested {(cpu_hz, gpu_hz)}, actual {(actual_cpu, actual_gpu)}")
 
-            actual_cpu_mhz = float(edge_board.read_cpu_freq(0) / 1000.0)
-            actual_gpu_mhz = float(edge_board.read_gpu_freq() / 1e6)
+            for repetition in range(args.repetitions):
+                for sample_idx in range(args.samples_per_config):
+                    task_name = task_cycle[(sample_idx + repetition) % len(task_cycle)]
+                    observation = build_observation(device, task_name, seed=args.seed + config_id * 101 + repetition * 17 + sample_idx)
+                    request = {
+                        "contract": contract(),
+                        "episode_id": f"dvfs_{config_id}_{repetition}_{sample_idx}",
+                        "obs_id": sample_idx,
+                        "state": observation["observation.state"].cpu().numpy().astype(np.float32).reshape(-1).tolist(),
+                        "rgb_png": encode_image(observation[IMAGE_KEY].permute(1, 2, 0).cpu().numpy().astype(np.uint8)),
+                        "task": observation["task"],
+                    }
 
-            warmup_start = time.perf_counter()
-            for _ in range(args.warmup):
-                inference(policy, observation, preprocessor)
-                if device == "cuda":
-                    torch.cuda.synchronize()
-            warmup_elapsed = time.perf_counter() - warmup_start
+                    if args.collect_energy:
+                        stop_event = threading.Event()
+                        power_samples: list[dict[str, Any]] = []
+                        def sampler():
+                            while not stop_event.is_set():
+                                ts = time.monotonic()
+                                value = read_vdd_in_power(config["jetson_orin_nx_16g"].get("ina_path"))
+                                if value is not None:
+                                    power_samples.append({
+                                        "config_id": config_id,
+                                        "repetition_id": repetition,
+                                        "sample_id": sample_idx,
+                                        "timestamp_monotonic_s": ts,
+                                        "power_w": float(value),
+                                        "source": "VDD_IN",
+                                        "task_name": task_name,
+                                    })
+                                time.sleep(max(args.sampling_interval_s, 0.001))
+                        thread = threading.Thread(target=sampler, daemon=True)
+                        thread.start()
+                    else:
+                        power_samples = []
 
-            latencies = []
-            powers = []
-            energies = []
-            for run_idx in range(args.runs):
-                if device == "cuda":
-                    torch.cuda.synchronize()
-                power_before = read_vdd_in_power(ina_path)
-                t0 = time.perf_counter()
-                infer_started = time.perf_counter()
-                inference(policy, observation, preprocessor)
-                if device == "cuda":
-                    torch.cuda.synchronize()
-                infer_ms = (time.perf_counter() - infer_started) * 1000.0
-                latencies.append(infer_ms)
+                    t0 = time.monotonic()
+                    actions, infer_ms = engine.infer(request)
+                    t1 = time.monotonic()
+                    if args.collect_energy:
+                        stop_event.set()
+                        thread.join(timeout=5.0)
+                    energy_j = integrate_power_samples(power_samples) if args.collect_energy else None
+                    if args.collect_energy and energy_j is None:
+                        print(f"Warning: invalid power/integration for config {config_id}, repetition {repetition}, sample {sample_idx}")
 
-                power_after = read_vdd_in_power(ina_path)
-                power_w = None
-                if power_before is not None and power_after is not None:
-                    power_w = 0.5 * (power_before + power_after)
-                elif power_before is not None:
-                    power_w = power_before
-                elif power_after is not None:
-                    power_w = power_after
-                if power_w is not None:
-                    powers.append(power_w)
-                else:
-                    powers.append(None)
+                    row = {
+                        "config_id": config_id,
+                        "repetition_id": repetition,
+                        "sample_id": sample_idx,
+                        "requested_cpu_mhz": float(cpu_hz / 1000.0),
+                        "actual_cpu_mhz": float(actual_cpu / 1000.0),
+                        "requested_gpu_mhz": float(gpu_hz / 1e6),
+                        "actual_gpu_mhz": float(actual_gpu / 1e6),
+                        "task_name": task_name,
+                        "inference_ms": float(infer_ms),
+                        "power_w": float(np.mean([p["power_w"] for p in power_samples])) if power_samples else None,
+                        "energy_j": None if energy_j is None else float(energy_j),
+                        "wall_duration_s": float(t1 - t0),
+                        "start_monotonic_s": t0,
+                        "end_monotonic_s": t1,
+                        "frequency_valid": bool(frequency_valid),
+                        "device": device,
+                        "model_name": model_path.name,
+                    }
+                    inference_rows.append(row)
+                    for sample in power_samples:
+                        power_rows.append({
+                            "config_id": config_id,
+                            "repetition_id": repetition,
+                            "sample_id": sample_idx,
+                            "timestamp_monotonic_s": float(sample["timestamp_monotonic_s"]),
+                            "power_w": float(sample["power_w"]),
+                            "source": sample["source"],
+                            "task_name": task_name,
+                            "device": device,
+                        })
 
-                energy_j = None
-                if power_w is not None:
-                    energy_j = power_w * (infer_ms / 1000.0)
-                energies.append(energy_j)
+                    repetition_rows.append({
+                        "config_id": config_id,
+                        "repetition_id": repetition,
+                        "requested_cpu_mhz": float(cpu_hz / 1000.0),
+                        "actual_cpu_mhz": float(actual_cpu / 1000.0),
+                        "requested_gpu_mhz": float(gpu_hz / 1e6),
+                        "actual_gpu_mhz": float(actual_gpu / 1e6),
+                        "task_name": task_name,
+                        "mean_inference_ms": float(infer_ms),
+                        "p95_inference_ms": float(infer_ms),
+                        "average_power_w": float(np.mean([p["power_w"] for p in power_samples])) if power_samples else None,
+                        "energy_per_inference_j": None if energy_j is None else float(energy_j),
+                        "edp_j_s": None if energy_j is None else float(energy_j * (infer_ms / 1000.0)),
+                        "frequency_valid": bool(frequency_valid),
+                        "thermal_c": float(np.mean([z["temp_c"] for z in thermal])) if thermal else None,
+                        "device": device,
+                        "model_name": model_path.name,
+                    })
 
-                inference_rows.append({
-                    "repetition_id": repeated_idx,
-                    "run_idx": run_idx,
-                    "cpu_mhz_requested": float(cpu_freq / 1000.0),
-                    "cpu_mhz_actual": actual_cpu_mhz,
-                    "gpu_mhz_requested": float(gpu_freq / 1e6),
-                    "gpu_mhz_actual": actual_gpu_mhz,
-                    "latency_ms": float(infer_ms),
-                    "power_w": power_w,
-                    "energy_j": energy_j,
-                    "wall_time_s": float(time.perf_counter() - t0),
-                    "device": device,
-                    "model_name": model_path.name,
-                    "collect_energy": bool(args.collect_energy),
-                })
-
-                if args.collect_energy and ina_path is not None:
-                    sample_start = time.perf_counter()
-                    sample_window = max(0.002, min(0.25, (infer_ms / 1000.0) * 2.0))
-                    sample_interval = max(args.sampling_interval_s, 0.001)
-                    while time.perf_counter() - sample_start < sample_window:
-                        power_sample = read_vdd_in_power(ina_path)
-                        if power_sample is not None:
-                            power_rows.append({
-                                "repetition_id": repeated_idx,
-                                "run_idx": run_idx,
-                                "timestamp_monotonic_s": time.perf_counter(),
-                                "power_w": float(power_sample),
-                                "source": "VDD_IN",
-                                "device": device,
-                            })
-                        time.sleep(sample_interval)
-
-            mean_latency = float(np.mean(latencies)) if latencies else None
-            p95_latency = float(np.percentile(latencies, 95)) if latencies else None
-            std_latency = float(np.std(latencies)) if latencies else None
-            mean_power = float(np.mean([p for p in powers if p is not None])) if any(p is not None for p in powers) else None
-            mean_energy = float(np.mean([e for e in energies if e is not None])) if any(e is not None for e in energies) else None
-            total_energy = float(np.sum([e for e in energies if e is not None])) if any(e is not None for e in energies) else None
-
-            repetition_rows.append({
-                "repetition_id": repeated_idx,
-                "requested_cpu_mhz": float(cpu_freq / 1000.0),
-                "actual_cpu_mhz": actual_cpu_mhz,
-                "requested_gpu_mhz": float(gpu_freq / 1e6),
-                "actual_gpu_mhz": actual_gpu_mhz,
-                "model_name": model_path.name,
-                "mean_inference_ms": mean_latency,
-                "p95_inference_ms": p95_latency,
-                "std_inference_ms": std_latency,
-                "mean_power_w": mean_power,
-                "mean_energy_j": mean_energy,
-                "total_energy_j": total_energy,
-                "energy_per_inference_j": mean_energy,
-                "warmup_elapsed_s": float(warmup_elapsed),
-                "device": device,
-                "power_mode": read_nvpmodel_status(),
-            })
-            repeated_idx += 1
-
-    repetitions_path = output_dir / "repetitions.csv"
-    repetition_fieldnames = [
-        "repetition_id", "requested_cpu_mhz", "actual_cpu_mhz", "requested_gpu_mhz", "actual_gpu_mhz",
-        "model_name", "mean_inference_ms", "p95_inference_ms", "std_inference_ms",
-        "mean_power_w", "mean_energy_j", "total_energy_j", "energy_per_inference_j",
-        "warmup_elapsed_s", "device", "power_mode"
-    ]
-    write_csv(repetitions_path, repetition_fieldnames, repetition_rows)
+                    time.sleep(0.01)
+    finally:
+        for cpu_idx in range(CPU_CORE_NUM):
+            board.set_cpu_freq(cpu_idx, original_cpu_freqs[cpu_idx] if original_cpu_freqs[cpu_idx] is not None else CPU_FREQS[0])
+        board.set_gpu_freq(original_gpu_freq if original_gpu_freq is not None else GPU_FREQS[0])
 
     inference_fieldnames = [
-        "repetition_id", "run_idx", "cpu_mhz_requested", "cpu_mhz_actual", "gpu_mhz_requested",
-        "gpu_mhz_actual", "latency_ms", "power_w", "energy_j", "wall_time_s", "device", "model_name",
-        "collect_energy"
+        "config_id", "repetition_id", "sample_id", "requested_cpu_mhz", "actual_cpu_mhz",
+        "requested_gpu_mhz", "actual_gpu_mhz", "task_name", "inference_ms", "power_w",
+        "energy_j", "wall_duration_s", "start_monotonic_s", "end_monotonic_s",
+        "frequency_valid", "device", "model_name"
     ]
     write_csv(output_dir / "inferences.csv", inference_fieldnames, inference_rows)
 
-    power_fieldnames = ["repetition_id", "run_idx", "timestamp_monotonic_s", "power_w", "source", "device"]
+    power_fieldnames = [
+        "config_id", "repetition_id", "sample_id", "timestamp_monotonic_s", "power_w", "source",
+        "task_name", "device"
+    ]
     write_csv(output_dir / "power_samples.csv", power_fieldnames, power_rows)
 
-    legacy_summary_path = output_dir / "smolvla_dvfs.csv"
-    legacy_rows = [{
-        "repetition_id": row["repetition_id"],
-        "requested_cpu_mhz": row["requested_cpu_mhz"],
-        "actual_cpu_mhz": row["actual_cpu_mhz"],
-        "requested_gpu_mhz": row["requested_gpu_mhz"],
-        "actual_gpu_mhz": row["actual_gpu_mhz"],
-        "mean_inference_ms": row["mean_inference_ms"],
-        "mean_power_w": row["mean_power_w"],
-        "mean_energy_j": row["mean_energy_j"],
-        "energy_per_inference_j": row["energy_per_inference_j"],
-        "power_mode": row["power_mode"],
-    } for row in repetition_rows]
-    write_csv(legacy_summary_path, list(legacy_rows[0].keys()) if legacy_rows else [], legacy_rows)
+    repetition_fieldnames = [
+        "config_id", "repetition_id", "requested_cpu_mhz", "actual_cpu_mhz", "requested_gpu_mhz",
+        "actual_gpu_mhz", "task_name", "mean_inference_ms", "p95_inference_ms", "average_power_w",
+        "energy_per_inference_j", "edp_j_s", "frequency_valid", "thermal_c", "device", "model_name"
+    ]
+    write_csv(output_dir / "repetitions.csv", repetition_fieldnames, repetition_rows)
 
-    if nvml is not None:
-        try:
-            nvml.nvmlShutdown()
-        except Exception:
-            pass
+    summary = summarize_repetitions(inference_rows)
+    summary_fieldnames = [
+        "config_id", "requested_cpu_mhz", "requested_gpu_mhz", "task_name", "mean_inference_ms",
+        "p95_inference_ms", "mean_power_w", "mean_energy_j", "energy_delay_product_j_s", "n_samples"
+    ]
+    write_csv(output_dir / "summary.csv", summary_fieldnames, summary)
 
-    print(f"Saved config to {output_dir / 'config.json'}")
-    print(f"Saved repetition summary to {repetitions_path}")
-    print(f"Saved per-inference samples to {output_dir / 'inferences.csv'}")
-    print(f"Saved power samples to {output_dir / 'power_samples.csv'}")
+    print(f"Saved benchmark configuration to {output_dir / 'config.json'}")
+    print(f"Saved {len(inference_rows)} inference records to {output_dir / 'inferences.csv'}")
+    print(f"Saved {len(power_rows)} power samples to {output_dir / 'power_samples.csv'}")
+    print(f"Saved summary to {output_dir / 'summary.csv'}")
 
 
 if __name__ == "__main__":

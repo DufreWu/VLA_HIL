@@ -179,6 +179,41 @@ postprocessing files, normalization tensors, and `scene_contract.json`. Copy the
 **entire directory**, not just model weights. The actual output bundle is created
 under `outputs/nx_multitask_v2` when the export step succeeds.
 
+## DVFS latency and energy benchmark
+
+The Jetson Orin NX benchmark is implemented in
+`jetson_orin_nx/benchmark/benchmark_dvfs.py`. It reuses the deployed VLA model
+and the same inference path as the server: one RGB image, the 9D robot state, and
+proper preprocessing/postprocessing for the action chunk. All supported CPU/GPU
+frequency pairs are evaluated, each configuration is repeated multiple times with
+randomized ordering, and the benchmark restores the original DVFS settings before
+exiting.
+
+Example:
+
+```bash
+python jetson_orin_nx/benchmark/benchmark_dvfs.py \
+  --model outputs/nx_multitask_v2 \
+  --output jetson_orin_nx/benchmark/results \
+  --task both \
+  --samples-per-config 20 \
+  --repetitions 3 \
+  --collect-energy \
+  --seed 7
+```
+
+This produces:
+
+- `config.json`
+- `inferences.csv`
+- `power_samples.csv`
+- `repetitions.csv`
+- `summary.csv`
+
+The power samples are timestamped and integrated over the full inference window
+for energy in joules. Empty or invalid measurements are left as null values rather
+than being silently estimated.
+
 Optional held-out loss:
 
 ```bash
