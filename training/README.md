@@ -103,7 +103,6 @@ Only after the smoke pass is confirmed.
 cd /home/chenwu/Documents/Github/VLA_HIL
 python training/train_smolvla.py \
   --dataset data/lerobot/train \
-  --device cpu \
   --output outputs/smolvla_multitask \
   --export outputs/nx_multitask_v2 \
   --steps 5000 \
@@ -123,8 +122,8 @@ python -m unittest discover -s tests -v
 python simulator/franka/collect_demos.py --task both --episodes 5 --max-attempts 50 --output data/raw_multitask --seed 42 --headless
 python training/validate_multitask_dataset.py --root data/raw_multitask --task both --strict
 python training/convert_dataset.py --raw data/raw_multitask --output data/lerobot --repo-id local/franka_multitask_v2 --val-fraction 0.2 --seed 7 --min-per-task 2
-python training/train_smolvla.py --dataset data/lerobot/train --device cpu --smoke
-python training/train_smolvla.py --dataset data/lerobot/train --device cpu --output outputs/smolvla_multitask --export outputs/nx_multitask_v2 --steps 5000 --batch-size 8 --workers 4 --seed 7
+python training/train_smolvla.py --dataset data/lerobot/train --smoke
+python training/train_smolvla.py --dataset data/lerobot/train --output outputs/smolvla_multitask --export outputs/nx_multitask_v2 --steps 5000 --batch-size 8 --workers 4 --seed 7
 ```
 
 ## Notes

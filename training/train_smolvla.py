@@ -43,7 +43,7 @@ def main():
            f'--dataset.root={a.dataset.resolve()}', f'--output_dir={a.output.resolve()}',
            '--job_name=franka_smolvla_multitask', f'--policy.device={a.device}', '--policy.push_to_hub=false',
            '--wandb.enable=false', f'--steps={a.steps}', f'--batch_size={a.batch_size}',
-           f'--num_workers={a.workers}', '--save_freq=20', '--eval_freq=0', f'--seed={a.seed}',
+           f'--num_workers={a.workers}', '--save_freq=1000', '--eval_freq=0', f'--seed={a.seed}',
            '--policy.chunk_size=50', '--policy.n_action_steps=50', '--policy.empty_cameras=0',
            '--policy.input_features=' + json.dumps(inputs),
            '--policy.output_features=' + json.dumps(outputs)]
