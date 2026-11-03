@@ -29,12 +29,48 @@ def _json_default(value):
 def save_json(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False, default=_json_default)+'\n')
 
+def compute_average_joint_jerk(joint_positions, dt_s):
+    """Mean L2 norm of 7-DOF joint jerk, in rad/s^3.
+
+    Positions are sampled uniformly at physics frequency. The forward
+    third finite difference approximates d^3q/dt^3 and is averaged over time.
+    Gripper joints must not be included.
+    """
+    import numpy as np
+
+    q = np.asarray(joint_positions, dtype=np.float64)
+    if q.ndim != 2 or q.shape[1] != 7:
+        raise ValueError('joint_positions must have shape (N, 7)')
+    if not np.all(np.isfinite(q)):
+        raise ValueError('Joint positions contain non-finite values')
+    if dt_s <= 0:
+        raise ValueError('dt_s must be positive')
+    if q.shape[0] < 4:
+        return None
+
+    jerk = np.diff(q, n=3, axis=0) / (dt_s ** 3)
+    return float(np.linalg.norm(jerk, axis=1).mean())
+
+
+def add_ajj_to_summary(summary, episode_rows):
+    """Add per-task mean and sample std, each episode weighted equally."""
+    values = [float(r['ajj']) for r in episode_rows
+              if r.get('ajj') is not None]
+    summary = dict(summary)
+    summary['ajj_mean_rad_s3'] = statistics.mean(values) if values else None
+    summary['ajj_std_rad_s3'] = (statistics.stdev(values) if len(values) > 1
+                                else (0.0 if values else None))
+    return summary
+
+
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--task', choices=['grasping', 'pushing', 'both'], default='both')
     p.add_argument('--episodes', type=int, default=10, help='Episodes per task')
     p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--seeds', type=int, nargs='+', default=None,
+                   help='Run --episodes episodes for each of these seeds (overrides --seed)')
     p.add_argument('--timeout', type=float, default=30.)
     p.add_argument('--hold', type=float, default=1.)
     p.add_argument('--collision-force', type=float, default=1.)
@@ -56,7 +92,30 @@ def parse_args():
         config = TaskConfig(timeout_s=a.timeout, hold_s=a.hold, collision_force_n=a.collision_force)
     except ValueError as exc:
         p.error(str(exc))
+    a.seeds = list(dict.fromkeys(a.seeds)) if a.seeds else [a.seed]
     return a, config
+
+
+def summarize_runs(rows, tasks, seeds):
+    """Overall per-task summary plus per-(task, seed) summaries."""
+    overall, by_seed = {}, []
+    for t in tasks:
+        task_rows = [r for r in rows if r['task'] == t]
+        if not task_rows:
+            continue
+        s = add_ajj_to_summary(summarize(task_rows), task_rows)
+        rates = []
+        for seed in seeds:
+            seed_rows = [r for r in task_rows if r['seed'] == seed]
+            if seed_rows:
+                seed_summary = add_ajj_to_summary(summarize(seed_rows), seed_rows)
+                rates.append(seed_summary['task_success_rate_pct'])
+                by_seed.append(dict(task=t, seed=seed, **seed_summary))
+        s['num_seeds'] = len(rates)
+        s['success_rate_seed_mean_pct'] = statistics.mean(rates)
+        s['success_rate_seed_std_pct'] = statistics.stdev(rates) if len(rates) > 1 else 0.0
+        overall[t] = s
+    return overall, by_seed
 
 
 def main():
@@ -82,7 +141,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     save_json(args.output/'run_config.json', dict(arguments={**vars(args), 'output': str(args.output)},
               metrics=asdict(config), physics_hz=60, action_hz=20, isaac_sim_target='6.0.0',
-              policy_health=getattr(policy, 'health', None)))
+              policy_health=getattr(policy, 'health', None),
+              ajj_definition='mean_t norm_2(delta^3(q_t)/dt^3), arm joints 1-7, rad/s^3'))
     from isaacsim import SimulationApp
     app = SimulationApp({'headless': args.headless})
     monitor = ContactMonitor(config.collision_force_n)
@@ -96,10 +156,12 @@ def main():
         if monitor.report_count == 0:
             raise RuntimeError('No contact reports during settling. Verify PhysX contact reporting before evaluation.')
         tasks = ['grasping', 'pushing'] if args.task == 'both' else [args.task]
-        for task in tasks:
-            rng = np.random.default_rng(args.seed)
+        multi_seed = len(args.seeds) > 1
+        for task, seed in ((t, s) for t in tasks for s in args.seeds):
+            rng = np.random.default_rng(seed)
+            prefix = f'{task}_seed{seed}' if multi_seed else task
             for episode in range(args.episodes):
-                initial = [float(rng.uniform(.42, .48)), float(rng.uniform(-.22, -.18)), .0258]
+                initial = [float(rng.uniform(.40, .50)), float(rng.uniform(-.25, -.15)), .0258]
                 target = [initial[0], initial[1]+.20, .0258]
                 scene.reset(initial)
                 initial = scene.cube_position().tolist()
@@ -122,7 +184,7 @@ def main():
                 clipped = 0
                 preview_frames = []
                 wall_start = time.perf_counter()
-                trace = args.output/f'{task}_{episode:04d}_trace.jsonl'
+                trace = args.output/f'{prefix}_{episode:04d}_trace.jsonl'
                 joint_positions = []
                 # Sample success at 60 Hz; contacts at every physics step, actions at 20 Hz.
                 start_sim = scene.sm.get_simulation_time()
@@ -144,7 +206,9 @@ def main():
                                 raise RuntimeError('Unexpected physics timestep')
                             position = scene.cube_position().tolist()
                             velocity = array(scene.cube.get_velocities()[0])[0].tolist()
-                            joint_positions.append(np.asarray(scene.state()[:7], dtype=np.float64).copy())
+                            joint_state = np.asarray(scene.state(), dtype=np.float64)
+                            # Actual executed 7-DOF arm pose, sampled each 60 Hz physics step.
+                            joint_positions.append(joint_state[:7].copy())
                             metrics.update(after-start_sim, position, velocity,
                                            monitor.fingers == FINGERS, monitor.collision)
                             log.write(json.dumps(dict(t=after-start_sim, position=position,
@@ -161,10 +225,10 @@ def main():
                             preview_frames.append(Image.fromarray(rgb))
                         tick += 1
                 if preview_frames:
-                    preview_frames[0].save(args.output/f'{task}_{episode:04d}.gif',
+                    preview_frames[0].save(args.output/f'{prefix}_{episode:04d}.gif',
                                            save_all=True, append_images=preview_frames[1:],
                                            duration=500, loop=0)
-                    preview_frames[-1].save(args.output/f'{task}_{episode:04d}_final.png')
+                    preview_frames[-1].save(args.output/f'{prefix}_{episode:04d}_final.png')
                 metrics.tct_wall_s = time.perf_counter() - wall_start
                 if metrics.tct_sim_s is None:
                     metrics.tct_sim_s = metrics.elapsed
@@ -181,20 +245,24 @@ def main():
                     number_of_inference_requests=len(getattr(policy, 'inference_times', []) or []),
                 )
                 metrics.inference_stats.update(queue_stats)
-                result = dict(metrics.result(), episode=episode, seed=args.seed,
+                result = dict(metrics.result(), episode=episode, seed=seed,
                               initial=initial, target=target, policy=args.policy,
                               clipped_actions=clipped, wall_time_s=metrics.tct_wall_s,
                               tct_wall_s=metrics.tct_wall_s, tct_sim_s=metrics.tct_sim_s)
                 rows.append(result)
                 with (args.output/'episodes.jsonl').open('a') as f:
                     f.write(json.dumps(result, allow_nan=False)+'\n')
-                summaries = {t: summarize([r for r in rows if r['task'] == t])
-                             for t in tasks if any(r['task'] == t for r in rows)}
+                summaries, by_seed = summarize_runs(rows, tasks, args.seeds)
                 save_json(args.output/'summary.json', summaries)
                 with (args.output/'summary.csv').open('w', newline='') as f:
                     writer = csv.DictWriter(f, fieldnames=['task', *next(iter(summaries.values())).keys()])
                     writer.writeheader()
                     writer.writerows(dict(task=t, **s) for t, s in summaries.items())
+                save_json(args.output/'summary_by_seed.json', by_seed)
+                with (args.output/'summary_by_seed.csv').open('w', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=list(by_seed[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(by_seed)
                 print(json.dumps(result), flush=True)
         save_json(args.output/'status.json', dict(status='completed', episodes=len(rows)))
     except BaseException as exc:
