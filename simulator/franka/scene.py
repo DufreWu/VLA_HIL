@@ -90,6 +90,47 @@ class FrankaScene:
     def state(self):
         return vector(array(self.robot.get_dof_positions())[0, self.indices])
 
+    def dynamics(self):
+        """Joint positions (rad/m), velocities (rad/s, m/s) and simulated joint efforts (N m, N)
+        in contract joint order, read after a physics step.
+
+        Efforts are PhysX projected joint forces: the incoming joint force of each link projected
+        on its motion axis, i.e. the force the joint drive actually applied in the last step.
+        ``get_dof_efforts`` is NOT used: it returns user-set actuation forces (zero under
+        position drives), not the drive output.
+        """
+        r = self.robot
+        return (array(r.get_dof_positions())[0, self.indices].astype(np.float64),
+                array(r.get_dof_velocities())[0, self.indices].astype(np.float64),
+                array(r.get_dof_projected_joint_forces())[0, self.indices].astype(np.float64))
+
+    def drive_diagnostics(self):
+        """Static drive parameters plus the user-set actuation force (must be 0 under position
+        drives, which shows the logged effort is the simulated drive output, not a command)."""
+        import omni.usd
+        r = self.robot
+        stage = omni.usd.get_context().get_stage()
+        gravity_disabled = {}
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            attr = prim.GetAttribute('physxRigidBody:disableGravity')
+            if path.startswith('/World/robot/') and attr and attr.HasAuthoredValue():
+                gravity_disabled[path.rsplit('/', 1)[-1]] = bool(attr.Get())
+        return dict(max_effort=array(r.get_dof_max_efforts())[0, self.indices].astype(np.float64),
+                    user_actuation_effort=array(r.get_dof_efforts())[0, self.indices].astype(np.float64),
+                    link_gravity_disabled=gravity_disabled)
+
+    def inverse_dynamics_terms(self):
+        """Mass matrix M(q) (contract order, 9x9), Coriolis/centrifugal c(q, qdot) and gravity
+        g(q) compensation forces, for the check tau ~= M qddot + c + g (free motion)."""
+        r = self.robot
+        m = array(r.get_mass_matrices())[0].astype(np.float64)
+        n = int(round(np.sqrt(m.size)))
+        m = m.reshape(n, n)[np.ix_(self.indices, self.indices)]
+        c = array(r.get_dof_coriolis_and_centrifugal_compensation_forces())[0, self.indices].astype(np.float64)
+        g = array(r.get_dof_gravity_compensation_forces())[0, self.indices].astype(np.float64)
+        return m, c, g
+
     def command(self):
         return vector(array(self.robot.get_dof_position_targets())[0, self.indices])
 

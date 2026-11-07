@@ -126,6 +126,12 @@ def _mean(rows, key, scale=1.0):
     return None if m is None else m * scale
 
 
+def _requested(cfg, key):
+    """Requested frequency; symbolic min/max are reported as resolved on the device."""
+    value = cfg.get(f'resolved_{key}', cfg[key])
+    return float('nan') if isinstance(value, str) else value
+
+
 def dvfs_table(rows: list[dict[str, Any]], configs: list[dict[str, Any]], reference: str) -> list[dict[str, Any]]:
     """One row per (config, task): frequencies, task metrics, latency, power, paired p-value."""
     tests = {(t['task'], t['config']): t['mcnemar_p'] for t in paired_success_tests(rows, reference)}
@@ -146,8 +152,8 @@ def dvfs_table(rows: list[dict[str, Any]], configs: list[dict[str, Any]], refere
                 config=name,
                 cpu_mode=cfg.get('cpu_governor', 'fixed') if governed else 'fixed',
                 gpu_mode=cfg.get('gpu_governor', 'fixed') if governed else 'fixed',
-                cpu_mhz=_mean(g, 'mean_cpu_khz', 1e-3) if governed else cfg['cpu_khz'] / 1e3,
-                gpu_mhz=_mean(g, 'mean_gpu_hz', 1e-6) if governed else cfg['gpu_hz'] / 1e6,
+                cpu_mhz=_mean(g, 'mean_cpu_khz', 1e-3) if governed else _requested(cfg, 'cpu_khz') / 1e3,
+                gpu_mhz=_mean(g, 'mean_gpu_hz', 1e-6) if governed else _requested(cfg, 'gpu_hz') / 1e6,
                 measured_cpu_mhz=_mean(g, 'mean_cpu_khz', 1e-3),
                 measured_gpu_mhz=_mean(g, 'mean_gpu_hz', 1e-6),
                 task=task, episodes=n, successes=k,

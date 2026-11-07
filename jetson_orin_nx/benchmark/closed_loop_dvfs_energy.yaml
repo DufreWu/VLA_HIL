@@ -1,0 +1,30 @@
+# DVFS configurations for the closed-loop energy evaluation (Jetson Orin NX 16 GB).
+#
+# min/max are resolved by the policy server against the frequencies the device itself
+# lists as available (CPU: scaling_available_frequencies of every core; GPU: devfreq
+# available_frequencies) under the active nvpmodel mode. The resolved values, the device
+# lists and the power mode are stored in experiment_config.json; unsupported values make
+# the run fail before Isaac Sim starts. EMC stays at the nvpmodel setting.
+#
+# Fixed configs pin all CPU cores and the GPU with the userspace governor; `default`
+# restores the stock governors (CPU schedutil, GPU nvhost_podgov) over the full range.
+# The first entry is the reference for paired tests.
+#
+# Note: outputs/dvfs_corners used closed_loop_dvfs.yaml (CPU min pinned to 422.4 MHz).
+# The device minimum may be lower (cores idle at 115.2 MHz under schedutil), so results
+# of the two files are not interchangeable.
+configs:
+  - name: default
+    governor: default
+  - name: gpu_max_cpu_max
+    cpu_khz: max
+    gpu_hz: max
+  - name: gpu_min_cpu_max
+    cpu_khz: max
+    gpu_hz: min
+  - name: gpu_max_cpu_min
+    cpu_khz: min
+    gpu_hz: max
+  - name: gpu_min_cpu_min
+    cpu_khz: min
+    gpu_hz: min

@@ -71,6 +71,11 @@ states match, and writes `episodes_posthoc.csv`, `summary.csv` (per-seed mean ±
 `comparison.csv` (paired difference, bootstrap 95% CI, exact McNemar or permutation
 p-value) and `summary_table.tex`.
 
+## DVFS energy evaluation
+
+Computational (Jetson VDD_IN), mechanical and actuator energy under five CPU/GPU DVFS
+configurations, with per-request timing and validation: see [DVFS_ENERGY.md](DVFS_ENERGY.md).
+
 ## Metrics
 
 | Metric | Definition |

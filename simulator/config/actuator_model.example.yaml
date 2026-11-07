@@ -1,0 +1,22 @@
+# Actuator electrical power model, per arm joint j:
+#   P_act_j = max(0, tau_j * qdot_j) / eta_j + alpha_j * tau_j^2 + P0_j        [W]
+# (no regenerative braking; the mechanical work term is already included, so E_mech is
+# never added on top of E_act).
+#
+# No parameters are shipped: the repository contains no calibrated Franka actuator data.
+# Copy this file, fill EVERY value, and document where each comes from. Any null value
+# makes the evaluation report E_act and E_total as unavailable (NaN).
+#
+#   estimate: true   values are assumed / taken from generic datasheets / fitted elsewhere;
+#                    results are labelled "model-based estimate" everywhere.
+#   estimate: false  values were identified on the actual actuators.
+estimate: true
+provenance: null          # e.g. "eta, alpha, P0 from <reference>, Table X; see paper Sec. Y"
+joints:
+  panda_joint1: {eta: null, alpha_w_per_nm2: null, p0_w: null}
+  panda_joint2: {eta: null, alpha_w_per_nm2: null, p0_w: null}
+  panda_joint3: {eta: null, alpha_w_per_nm2: null, p0_w: null}
+  panda_joint4: {eta: null, alpha_w_per_nm2: null, p0_w: null}
+  panda_joint5: {eta: null, alpha_w_per_nm2: null, p0_w: null}
+  panda_joint6: {eta: null, alpha_w_per_nm2: null, p0_w: null}
+  panda_joint7: {eta: null, alpha_w_per_nm2: null, p0_w: null}

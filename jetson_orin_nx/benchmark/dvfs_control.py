@@ -23,10 +23,21 @@ CLOSED_LOOP_CONFIG = ROOT / 'jetson_orin_nx' / 'benchmark' / 'closed_loop_dvfs.y
 DEFAULT_GOVERNORS = dict(cpu='schedutil', gpu='nvhost_podgov')
 
 
+def _freq_value(name, value):
+    """A positive integer frequency, or the symbols 'min'/'max' resolved on the device."""
+    if isinstance(value, str) and value.strip().lower() in ('min', 'max'):
+        return value.strip().lower()
+    value = int(value)
+    if value <= 0:
+        raise ValueError(f'{name}: frequencies must be positive')
+    return value
+
+
 def load_dvfs_configs(path=CLOSED_LOOP_CONFIG, names=None) -> list[dict[str, Any]]:
     """Return validated configs in file order.
 
-    Fixed configs: ``{name, cpu_khz, gpu_hz}``. Governor configs: ``{name, governor: default}``
+    Fixed configs: ``{name, cpu_khz, gpu_hz}``; a frequency may be ``min``/``max``, which the
+    server resolves against the frequencies the device itself lists as available. Governor configs: ``{name, governor: default}``
     (stock governors) or ``{name, cpu_governor, gpu_governor}``; their cpu_khz/gpu_hz are None.
     """
     data = yaml.safe_load(Path(path).read_text()) or {}
@@ -49,9 +60,7 @@ def load_dvfs_configs(path=CLOSED_LOOP_CONFIG, names=None) -> list[dict[str, Any
                             cpu_governor=str(item.get('cpu_governor', DEFAULT_GOVERNORS['cpu'])),
                             gpu_governor=str(item.get('gpu_governor', DEFAULT_GOVERNORS['gpu']))))
             continue
-        cpu, gpu = int(item['cpu_khz']), int(item['gpu_hz'])
-        if cpu <= 0 or gpu <= 0:
-            raise ValueError(f'{name}: frequencies must be positive')
+        cpu, gpu = _freq_value(name, item['cpu_khz']), _freq_value(name, item['gpu_hz'])
         out.append(dict(item, name=name, cpu_khz=cpu, gpu_hz=gpu))
     if names:
         by_name = {c['name']: c for c in out}
@@ -99,6 +108,17 @@ def read_vdd_in_power(ina_path: str | None) -> float | None:
         return None
 
 
+def read_power_mode() -> str | None:
+    """Active nvpmodel power mode (e.g. 'NV Power Mode: MAXN'), or None if unavailable."""
+    import subprocess
+    try:
+        out = subprocess.run(['nvpmodel', '-q'], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    return ' / '.join(lines[:2]) if lines else None
+
+
 def read_temperatures() -> dict[str, float]:
     temps = {}
     for zone in sorted(Path('/sys/class/thermal').glob('thermal_zone*')):
@@ -115,22 +135,35 @@ def integrate(samples: list[tuple[float, float]], start: float, end: float) -> t
 
     Returns (energy_J or None if fewer than two samples cover the window, n_samples_inside).
     """
+    import bisect
     if end <= start:
         return None, 0
     pts = sorted(samples)
+    times = [t for t, _ in pts]
+    lo, hi = bisect.bisect_right(times, start), bisect.bisect_left(times, end)
     if len(pts) < 2 or pts[0][0] > start or pts[-1][0] < end:
-        return None, sum(start <= t <= end for t, _ in pts)
+        return None, bisect.bisect_right(times, end) - bisect.bisect_left(times, start)
 
     def interp(t):
-        for (t0, p0), (t1, p1) in zip(pts, pts[1:]):
-            if t0 <= t <= t1:
-                return p0 if t1 == t0 else p0 + (p1 - p0) * (t - t0) / (t1 - t0)
-        raise AssertionError('unreachable')
+        i = min(max(bisect.bisect_right(times, t), 1), len(pts) - 1)
+        (t0, p0), (t1, p1) = pts[i - 1], pts[i]
+        return p0 if t1 == t0 else p0 + (p1 - p0) * (t - t0) / (t1 - t0)
 
-    inside = [(t, p) for t, p in pts if start < t < end]
-    seq = [(start, interp(start)), *inside, (end, interp(end))]
+    seq = [(start, interp(start)), *pts[lo:hi], (end, interp(end))]
     energy = sum(0.5 * (p0 + p1) * (t1 - t0) for (t0, p0), (t1, p1) in zip(seq, seq[1:]))
-    return float(energy), len(inside)
+    return float(energy), hi - lo
+
+
+def sensor_updates(samples: list[tuple[float, float]], start: float, end: float) -> int:
+    """Number of reading changes strictly inside (start, end): a lower bound on fresh sensor
+    conversions. Polling faster than the INA3221 refresh repeats the same value."""
+    vals = [p for t, p in samples if start < t < end]
+    return sum(a != b for a, b in zip(vals, vals[1:]))
+
+
+# A per-inference energy is only reported when the sensor refreshed at least this many
+# times inside the inference interval; otherwise it cannot be attributed to that request.
+MIN_UPDATES_PER_INFERENCE = 2
 
 
 class PowerMonitor:
@@ -191,15 +224,27 @@ class PowerMonitor:
             self.thread.join(timeout=2.0)
 
     def begin_episode(self, tag: str):
-        self.episode = dict(tag=str(tag), start=self.clock(), inferences=[],
-                            temps_start=read_temperatures())
+        # Slow sysfs reads first: the window must start as close as possible to the reply,
+        # because the client starts its wall clock when the reply arrives.
+        temps = read_temperatures()
+        self.episode = dict(tag=str(tag), start=self.clock(), inferences=[], temps_start=temps)
         return dict(tag=self.episode['tag'])
 
-    def record_inference(self, start: float, end: float):
+    def record_inference(self, start: float, end: float, key: dict[str, Any] | None = None):
+        """Register an inference interval [start, end] (server monotonic s) for the open episode."""
         if self.episode is not None:
-            self.episode['inferences'].append((float(start), float(end)))
+            self.episode['inferences'].append((float(start), float(end), dict(key or {})))
 
-    def end_episode(self, tag: str, settle_s: float | None = None) -> dict[str, Any]:
+    def end_episode(self, tag: str, settle_s: float | None = None, active_s: float | None = None,
+                    include_samples: bool = False) -> dict[str, Any]:
+        """Close the episode window and integrate VDD_IN.
+
+        ``energy_j`` covers the whole window [begin, end request]. If ``active_s`` is given
+        (the client's wall-clock duration of the closed-loop episode, measured from the reply
+        to begin_episode), ``energy_active_j`` covers [begin, begin + active_s] only, which
+        excludes draining the last in-flight request. Per-inference energies are integrated
+        over each inference's own interval. All times are this host's monotonic clock.
+        """
         if self.episode is None or self.episode['tag'] != str(tag):
             raise ValueError(f'No open energy episode with tag {tag!r}')
         end = self.clock()
@@ -213,29 +258,54 @@ class PowerMonitor:
         with self.lock:
             samples = list(self.samples)
             freqs = [f for f in self.freq_samples if ep['start'] <= f[0] <= end]
-        energy, n = integrate(samples, ep['start'], end)
+        start = ep['start']
+        energy, n = integrate(samples, start, end)
 
-        def mean_of(idx):
+        def stat_of(idx, fn):
             vals = [f[idx] for f in freqs if f[idx] is not None]
-            return sum(vals) / len(vals) if vals else None
-        wall = end - ep['start']
-        inf_energy, inf_time = 0.0, 0.0
-        for s, e in ep['inferences']:
-            e_j, _ = integrate(samples, s, e)
-            if e_j is None:
-                inf_energy = None
-                break
-            inf_energy += e_j
-            inf_time += e - s
-        return dict(tag=ep['tag'], wall_s=wall, energy_j=energy,
-                    mean_power_w=None if energy is None else energy / wall,
-                    n_power_samples=n,
-                    inference_energy_j=inf_energy,
-                    inference_busy_s=inf_time,
-                    inference_duty_cycle=inf_time / wall if wall > 0 else None,
-                    n_inferences=len(ep['inferences']),
-                    mean_cpu_khz=mean_of(1), mean_gpu_hz=mean_of(2), n_freq_samples=len(freqs),
-                    temps_start_c=ep['temps_start'], temps_end_c=read_temperatures())
+            return fn(vals) if vals else None
+        mean = lambda v: sum(v) / len(v)
+        wall = end - start
+        active = None if active_s is None else min(max(float(active_s), 0.0), wall)
+        energy_active = integrate(samples, start, start + active)[0] if active else None
+        inf_energy, inf_time, inferences = 0.0, 0.0, []
+        for s0, s1, key in ep['inferences']:
+            e_j, n_in = integrate(samples, s0, s1)
+            updates = sensor_updates(samples, s0, s1)
+            attributable = e_j is not None and updates >= MIN_UPDATES_PER_INFERENCE
+            inferences.append(dict(key, start_s=s0 - start, end_s=s1 - start, latency_s=s1 - s0,
+                                   energy_j=e_j if attributable else None,
+                                   mean_power_w=e_j / (s1 - s0) if attributable and s1 > s0 else None,
+                                   n_power_samples=n_in, n_sensor_updates=updates))
+            inf_energy = None if inf_energy is None or e_j is None else inf_energy + e_j
+            inf_time += s1 - s0
+        window = [(t, p) for t, p in samples if start <= t <= end]
+        out = dict(tag=ep['tag'], wall_s=wall, energy_j=energy,
+                   mean_power_w=None if energy is None else energy / wall,
+                   n_power_samples=n,
+                   active_s=active, energy_active_j=energy_active,
+                   mean_power_active_w=energy_active / active if energy_active is not None and active else None,
+                   sample_rate_hz=len(window) / wall if wall > 0 else None,
+                   sensor_update_rate_hz=sensor_updates(samples, start, end) / wall if wall > 0 else None,
+                   inference_energy_j=inf_energy,
+                   inference_busy_s=inf_time,
+                   inference_duty_cycle=inf_time / wall if wall > 0 else None,
+                   n_inferences=len(ep['inferences']), inferences=inferences,
+                   mean_cpu_khz=stat_of(1, mean), mean_gpu_hz=stat_of(2, mean),
+                   min_cpu_khz=stat_of(1, min), max_cpu_khz=stat_of(1, max),
+                   min_gpu_hz=stat_of(2, min), max_gpu_hz=stat_of(2, max),
+                   n_freq_samples=len(freqs),
+                   temps_start_c=ep['temps_start'], temps_end_c=read_temperatures())
+        if include_samples:
+            out['power_samples'] = [[round(t - start, 6), round(p, 4)] for t, p in window]
+        return out
+
+
+def _as_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 class DvfsController:
@@ -269,8 +339,58 @@ class DvfsController:
         if not all(os.access(p, os.W_OK) for p in nodes):
             raise PermissionError('DVFS sysfs nodes are not writable; run the server with sudo.')
 
-    def apply(self, cpu_khz: int, gpu_hz: int, settle_s: float = 1.0) -> dict[str, Any]:
-        cpu_khz, gpu_hz = int(cpu_khz), int(gpu_hz)
+    def capabilities(self) -> dict[str, Any]:
+        """Frequencies the device itself lists as available, plus the active power mode.
+
+        CPU: intersection of every core's ``scaling_available_frequencies`` (falls back to
+        the cpuinfo min/max). GPU: devfreq ``available_frequencies``.
+        """
+        per_core, bounds = [], []
+        for i in range(self.n_cpus):
+            listed = (read_text(self._cpu(i, 'scaling_available_frequencies')) or '').split()
+            per_core.append({int(x) for x in listed})
+            lo, hi = (_as_int(read_text(self._cpu(i, n))) for n in ('cpuinfo_min_freq', 'cpuinfo_max_freq'))
+            if lo is not None and hi is not None:
+                bounds.append((lo, hi))
+        cpu = sorted(set.intersection(*per_core)) if per_core and all(per_core) else []
+        cpu_range = [max(b[0] for b in bounds), min(b[1] for b in bounds)] if bounds else None
+        gpu = sorted(int(x) for x in (read_text(self.gpu_path / 'available_frequencies') or '').split())
+        ina = self.ina_path
+        return dict(cpu_khz_available=cpu, gpu_hz_available=gpu, cpu_khz_range=cpu_range,
+                    cpu_khz_source=('scaling_available_frequencies (intersection over cores)' if cpu
+                                    else 'cpuinfo_min/max_freq (no frequency list exposed)'),
+                    gpu_hz_source='devfreq available_frequencies',
+                    power_mode=read_power_mode(),
+                    emc_hz=_as_int(read_text(self.emc_cap_path)) if self.emc_cap_path else None,
+                    power_sensor=dict(path=ina, channel='in1/curr1',
+                                      label=read_text(os.path.join(ina, 'in1_label')) if ina else None,
+                                      update_interval_ms=_as_int(read_text(os.path.join(ina, 'update_interval')))
+                                      if ina else None))
+
+    def resolve(self, cpu_khz, gpu_hz, caps: dict[str, Any] | None = None) -> tuple[int, int]:
+        """Map 'min'/'max' to the device's available frequencies and reject unlisted values."""
+        caps = caps or self.capabilities()
+        out = []
+        for value, listed, rng, unit in ((cpu_khz, caps['cpu_khz_available'], caps.get('cpu_khz_range'), 'CPU kHz'),
+                                         (gpu_hz, caps['gpu_hz_available'], None, 'GPU Hz')):
+            bounds = [listed[0], listed[-1]] if listed else rng
+            if isinstance(value, str):
+                if value not in ('min', 'max'):
+                    raise ValueError(f'Unknown symbolic frequency {value!r}')
+                if not bounds:
+                    raise ValueError(f'Device exposes no available {unit} values; cannot resolve {value!r}')
+                value = bounds[0] if value == 'min' else bounds[1]
+            value = int(value)
+            if listed and value not in listed:
+                raise ValueError(f'{unit} {value} is not supported by this device; available: {listed}')
+            if not listed and bounds and not bounds[0] <= value <= bounds[1]:
+                raise ValueError(f'{unit} {value} is outside the device range {bounds}')
+            out.append(value)
+        return out[0], out[1]
+
+    def apply(self, cpu_khz, gpu_hz, settle_s: float = 1.0) -> dict[str, Any]:
+        requested = (cpu_khz, gpu_hz)
+        cpu_khz, gpu_hz = self.resolve(cpu_khz, gpu_hz)
         for i in range(self.n_cpus):
             hw_max = read_text(self._cpu(i, 'cpuinfo_max_freq'))
             hw_min = read_text(self._cpu(i, 'cpuinfo_min_freq'))
@@ -297,6 +417,7 @@ class DvfsController:
         gpu = status['gpu_hz']
         gpu_ok = gpu is not None and abs(gpu - gpu_hz) <= max(5_000_000, 0.02 * gpu_hz)
         status.update(requested_cpu_khz=cpu_khz, requested_gpu_hz=gpu_hz,
+                      requested_symbolic=[str(v) for v in requested],
                       frequency_valid=bool(cpu_ok and gpu_ok))
         self.current = status
         return status
@@ -342,12 +463,9 @@ class DvfsController:
         return (sum(cpus) / len(cpus) if cpus else None), gpu
 
     def status(self) -> dict[str, Any]:
-        def as_int(v):
-            try:
-                return int(v)
-            except (TypeError, ValueError):
-                return None
-        return dict(cpu_khz=[as_int(read_text(self._cpu(i, 'scaling_cur_freq'))) for i in range(self.n_cpus)],
+        as_int = _as_int
+        return dict(power_mode=read_power_mode(),
+                    cpu_khz=[as_int(read_text(self._cpu(i, 'scaling_cur_freq'))) for i in range(self.n_cpus)],
                     gpu_hz=as_int(read_text(self.gpu_path / 'cur_freq')),
                     emc_hz=as_int(read_text(self.emc_cap_path)) if self.emc_cap_path else None,
                     cpu_governors=[read_text(self._cpu(i, 'scaling_governor')) for i in range(self.n_cpus)],

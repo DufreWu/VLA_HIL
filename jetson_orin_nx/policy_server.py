@@ -58,6 +58,7 @@ class Engine:
         if self.device.startswith('cuda'):
             torch.cuda.synchronize()
         start = time.perf_counter()
+        start_mono = time.monotonic()
         if request.get('noise_seed') is not None:
             # Reproducible flow-matching noise: identical chunk index -> identical noise.
             torch.manual_seed(int(request['noise_seed']))
@@ -70,7 +71,10 @@ class Engine:
                                    for i in range(normalized.shape[1])]).cpu().numpy()
         if self.device.startswith('cuda'):
             torch.cuda.synchronize()
-        return action_chunk(actions), (time.perf_counter()-start)*1000
+        elapsed_ms = (time.perf_counter()-start)*1000
+        # Same timed region on the monotonic clock used by the power monitor.
+        self.last_window = (start_mono, time.monotonic())
+        return action_chunk(actions), elapsed_ms
 
 
 def main():
@@ -119,11 +123,15 @@ def main():
         def do_GET(self):
             if self.path == '/dvfs' and dvfs is not None:
                 self.reply(200, dvfs.status()); return
+            if self.path == '/dvfs/capabilities' and dvfs is not None:
+                self.reply(200, dvfs.capabilities()); return
             if self.path != '/health':
                 self.reply(404, {'error': 'unknown endpoint'}); return
             self.reply(200, {'contract': contract(), 'mock': a.mock, 'model': str(a.model),
                              'energy': monitor is not None, 'dvfs_control': dvfs is not None,
-                             'dvfs_modes': ['fixed', 'governor'] if dvfs is not None else []})
+                             'dvfs_modes': ['fixed', 'governor'] if dvfs is not None else [],
+                             'features': ['request_timing', 'inference_energy', 'dvfs_capabilities',
+                                          'symbolic_frequencies']})
 
         def do_POST(self):
             control = {'/dvfs': dvfs, '/episode/start': monitor, '/episode/stop': monitor}
@@ -135,6 +143,9 @@ def main():
                     body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0')) or 0) or b'{}')
                     if self.path == '/dvfs':
                         settle = float(body.get('settle_s', 1.0))
+                        if body.get('resolve_only'):  # Validate/resolve without touching sysfs.
+                            cpu, gpu = dvfs.resolve(body['cpu_khz'], body['gpu_hz'])
+                            self.reply(200, dict(cpu_khz=cpu, gpu_hz=gpu)); return
                         if body.get('cpu_governor') or body.get('gpu_governor'):
                             status = dvfs.apply_governor(body['cpu_governor'], body['gpu_governor'], settle)
                         else:
@@ -148,7 +159,8 @@ def main():
                     elif self.path == '/episode/start':
                         self.reply(200, monitor.begin_episode(body['tag']))
                     else:
-                        self.reply(200, monitor.end_episode(body['tag']))
+                        self.reply(200, monitor.end_episode(body['tag'], active_s=body.get('active_s'),
+                                                            include_samples=bool(body.get('include_samples'))))
                 except (ValueError, KeyError, TypeError) as exc:
                     self.reply(400, {'error': str(exc)})
                 except OSError as exc:
@@ -156,6 +168,7 @@ def main():
                 return
             if self.path != '/infer':
                 self.reply(404, {'error': 'unknown endpoint'}); return
+            t_recv = time.monotonic()  # Headers parsed; body not yet read.
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 2_000_000:
@@ -164,16 +177,27 @@ def main():
                 request = json.loads(self.rfile.read(length))
                 check_contract(request['contract'])
                 state = vector(request['state'])
+                t_parsed = time.monotonic()
                 if a.mock:
                     decode_image(request['rgb_png'])
                     actions, inference_ms = np.tile(state, (50, 1)), 0.
+                    t0 = t1 = time.monotonic()
                 else:
-                    t0 = time.monotonic()
                     actions, inference_ms = engine.infer(request)
+                    t0, t1 = engine.last_window  # Model forward pass only (after image decode).
                     if monitor is not None:
-                        monitor.record_inference(t0, time.monotonic())
-                self.reply(200, {'episode_id': request['episode_id'], 'obs_id': request['obs_id'],
-                                'actions': actions.tolist(), 'inference_ms': inference_ms, 'mock': a.mock})
+                        monitor.record_inference(t0, t1, dict(episode_id=request['episode_id'],
+                                                              obs_id=request['obs_id']))
+                body = {'episode_id': request['episode_id'], 'obs_id': request['obs_id'],
+                        'actions': actions.tolist(), 'inference_ms': inference_ms, 'mock': a.mock}
+                # Server-clock durations only; the client never subtracts across hosts.
+                t_reply = time.monotonic()
+                body['server_timing_ms'] = dict(receive_to_parsed=(t_parsed-t_recv)*1000,
+                                                parsed_to_inference_start=(t0-t_parsed)*1000,
+                                                inference=(t1-t0)*1000,
+                                                inference_end_to_reply=(t_reply-t1)*1000,
+                                                total=(t_reply-t_recv)*1000)
+                self.reply(200, body)
             except (ValueError, KeyError, TypeError) as exc:
                 self.reply(400, {'error': str(exc)})
             except Exception as exc:
