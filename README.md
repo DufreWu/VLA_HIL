@@ -374,6 +374,63 @@ This evaluates a configurable number of batches. Flow-matching loss is stochasti
 (seed fixed by this script); it is NOT closed-loop task success. Validate using
 fresh simulation seeds with the model server on your host GPU first.
 
+## Closed-loop DVFS study (Continuous mode)
+
+Inference-only heatmaps do not show what a DVFS point does to the *task*. This
+study runs the same Continuous-mode closed loop at three Jetson configurations
+(`jetson_orin_nx/benchmark/closed_loop_dvfs.yaml`, chosen from the open-loop sweep):
+
+| Name | CPU / GPU [MHz] | Open-loop latency | VDD_IN power | vs. 2.5 s chunk horizon |
+|---|---|---|---|---|
+| `performance` | 1984 / 714 | 788 ms | 8.9 W | refilled before the 1.25 s execute window ends |
+| `balanced` | 1036.8 / 612 | 1421 ms | 6.4 W | partially stale chunks, holds |
+| `powersave` | 422.4 / 408 | 3122 ms | 5.6 W | every chunk expired on arrival |
+
+On the Jetson (root is needed to pin frequencies; original governors and limits
+are restored on exit or SIGTERM):
+
+```bash
+sudo -E python jetson_orin_nx/policy_server.py --model outputs/nx_multitask_v2 \
+  --device cuda --port 8080 --dvfs-control
+```
+
+On the simulation server:
+
+```bash
+python simulator/evaluate.py --policy remote --server http://JETSON_IP:8080 \
+  --mode continuous --execute-steps 25 --prefetch 20 --task both --episodes 20 \
+  --seed 42 --timeout 30 --headless \
+  --dvfs-configs jetson_orin_nx/benchmark/closed_loop_dvfs.yaml --energy \
+  --output outputs/dvfs_closed_loop
+python simulator/analyze_dvfs_closed_loop.py outputs/dvfs_closed_loop
+```
+
+Protocol:
+
+- **Same initial state.** Cube pose is drawn once per (task, seed, episode) and
+  reused for every configuration; the robot is reset to the same home pose. The
+  server seeds SmolVLA's flow-matching noise per chunk index (`noise_seed`), so the
+  k-th chunk of an episode uses the same noise under every configuration.
+- **Order.** Configurations are rotated per episode (cyclic Latin square) to spread
+  thermal drift; each DVFS switch is followed by a settle period and warm-up inferences.
+- **Timing.** Control ticks are paced to wall clock. A returned chunk is released
+  only after `ceil(measured capture-to-arrival delay x 20 Hz)` ticks, then replaces
+  the queue with its not-yet-elapsed slots. If Isaac Sim runs slower than real
+  time the action delay in simulated time is still the measured one;
+  `real_time_factor` and `deadline_misses` are logged per episode.
+- **No early abort.** With `--dvfs-configs` the starvation abort is disabled, so every
+  failure runs to the timeout and energy windows are comparable.
+- **Per-episode metrics** (`episodes.jsonl`): success, completion time (sim s), AJJ,
+  collision, Jetson VDD_IN energy over the episode window (`energy_j`, Jetson clock),
+  energy inside inference calls, mean power, inference latency, action delay,
+  holding time, SoC temperature, actual CPU/GPU frequency.
+- **Outputs.** `summary_dvfs.csv` per (config, task); `table_closed_loop.tex` with SR
+  95% Wilson CIs and energy per successful task; `paired_tests.json` with exact
+  McNemar tests against the first config (`performance`) on matched episodes.
+
+Energy is whole-board VDD_IN over wall-clock time. If `real_time_factor` is well
+below 1 the window is stretched; report it alongside energy.
+
 ## 4A. Test networking before loading a model
 
 On NX (or another host), using NumPy/Pillow only:

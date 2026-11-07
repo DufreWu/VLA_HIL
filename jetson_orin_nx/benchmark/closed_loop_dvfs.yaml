@@ -1,0 +1,28 @@
+# Three representative Jetson Orin NX 16GB DVFS points for the Continuous-mode
+# closed-loop study. Numbers in the comments are the open-loop SmolVLA results in
+# results/per_config_with_pareto.csv (60 inferences per config, VDD_IN power).
+# EMC is left at the nvpmodel default (not locked), exactly as in the benchmark.
+#
+# At 20 Hz control the full 50-step action chunk covers 2.5 s:
+#   performance: latency < execute window (1.25 s) -> queue can be refilled in time
+#   balanced:    1.25 s < latency < 2.5 s          -> chunks partially stale, holds
+#   powersave:   latency > 2.5 s                   -> every chunk expires on arrival
+configs:
+  - name: performance       # Pareto point, lowest latency
+    cpu_khz: 1984000
+    gpu_hz: 714000000
+    open_loop_latency_ms: 788
+    open_loop_power_w: 8.92
+    open_loop_energy_j: 7.02
+  - name: balanced          # ~28% lower power than performance
+    cpu_khz: 1036800
+    gpu_hz: 612000000
+    open_loop_latency_ms: 1421
+    open_loop_power_w: 6.39
+    open_loop_energy_j: 9.08
+  - name: powersave         # lowest board power in the sweep
+    cpu_khz: 422400
+    gpu_hz: 408000000
+    open_loop_latency_ms: 3122
+    open_loop_power_w: 5.61
+    open_loop_energy_j: 17.53

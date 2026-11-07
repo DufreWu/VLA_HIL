@@ -7,7 +7,8 @@ import sys
 import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
-from common.contract import contract, check_contract, vector, action_chunk, decode_image, IMAGE_KEY
+from common.contract import (contract, check_contract, vector, action_chunk, decode_image,
+                             encode_image, IMAGE_KEY)
 
 
 class Engine:
@@ -57,6 +58,9 @@ class Engine:
         if self.device.startswith('cuda'):
             torch.cuda.synchronize()
         start = time.perf_counter()
+        if request.get('noise_seed') is not None:
+            # Reproducible flow-matching noise: identical chunk index -> identical noise.
+            torch.manual_seed(int(request['noise_seed']))
         self.policy.reset()  # One-observation policy; do not retain select_action queues.
         batch = self.pre(observation)
         with torch.inference_mode():
@@ -76,10 +80,33 @@ def main():
     p.add_argument('--port', type=int, default=8080)
     p.add_argument('--device', default='cuda')
     p.add_argument('--mock', action='store_true', help='Hold current joints; transport testing ONLY')
+    p.add_argument('--energy', action='store_true',
+                   help='Sample VDD_IN and expose /episode/start and /episode/stop energy windows')
+    p.add_argument('--dvfs-control', action='store_true',
+                   help='Expose POST /dvfs to pin CPU/GPU frequencies (needs sudo; implies --energy). '
+                        'Original DVFS settings are restored on exit.')
+    p.add_argument('--power-interval-s', type=float, default=0.005)
+    p.add_argument('--dvfs-warmup', type=int, default=3, help='Inferences after each DVFS switch')
     a = p.parse_args()
     if not a.mock and a.model is None:
         p.error('--model is required unless --mock is used')
     engine = None if a.mock else Engine(str(a.model.resolve()), a.device)
+    dvfs = monitor = None
+    if a.dvfs_control:
+        from jetson_orin_nx.benchmark.dvfs_control import DvfsController
+        dvfs = DvfsController()
+        dvfs.check_writable()
+        dvfs.take_snapshot()
+    if a.energy or a.dvfs_control:
+        from jetson_orin_nx.benchmark.dvfs_control import PowerMonitor, DvfsController as _D
+        monitor = PowerMonitor((dvfs or _D()).ina_path, a.power_interval_s).start()
+
+    def warmup(count):
+        if engine is None:
+            return []
+        request = dict(state=[0.0]*9, task='Grasp the red cube and lift it above the table.',
+                       rgb_png=encode_image(np.zeros((256, 256, 3), dtype=np.uint8)))
+        return [engine.infer(request)[1] for _ in range(max(0, int(count)))]
 
     class Handler(BaseHTTPRequestHandler):
         def reply(self, code, value):
@@ -89,11 +116,37 @@ def main():
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.path == '/dvfs' and dvfs is not None:
+                self.reply(200, dvfs.status()); return
             if self.path != '/health':
                 self.reply(404, {'error': 'unknown endpoint'}); return
-            self.reply(200, {'contract': contract(), 'mock': a.mock, 'model': str(a.model)})
+            self.reply(200, {'contract': contract(), 'mock': a.mock, 'model': str(a.model),
+                             'energy': monitor is not None, 'dvfs_control': dvfs is not None})
 
         def do_POST(self):
+            control = {'/dvfs': dvfs, '/episode/start': monitor, '/episode/stop': monitor}
+            if self.path in control:
+                if control[self.path] is None:
+                    self.reply(404, {'error': f'{self.path} disabled; start server with --dvfs-control/--energy'})
+                    return
+                try:
+                    body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0')) or 0) or b'{}')
+                    if self.path == '/dvfs':
+                        status = dvfs.apply(body['cpu_khz'], body['gpu_hz'], float(body.get('settle_s', 1.0)))
+                        status['name'] = body.get('name')
+                        status['warmup_ms'] = warmup(body.get('warmup', a.dvfs_warmup))
+                        print(f"DVFS -> {body.get('name')}: {status['cpu_khz'][0]} kHz / {status['gpu_hz']} Hz "
+                              f"valid={status['frequency_valid']}", flush=True)
+                        self.reply(200, status)
+                    elif self.path == '/episode/start':
+                        self.reply(200, monitor.begin_episode(body['tag']))
+                    else:
+                        self.reply(200, monitor.end_episode(body['tag']))
+                except (ValueError, KeyError, TypeError) as exc:
+                    self.reply(400, {'error': str(exc)})
+                except OSError as exc:
+                    self.reply(500, {'error': f'sysfs write failed: {exc}'})
+                return
             if self.path != '/infer':
                 self.reply(404, {'error': 'unknown endpoint'}); return
             try:
@@ -108,7 +161,10 @@ def main():
                     decode_image(request['rgb_png'])
                     actions, inference_ms = np.tile(state, (50, 1)), 0.
                 else:
+                    t0 = time.monotonic()
                     actions, inference_ms = engine.infer(request)
+                    if monitor is not None:
+                        monitor.record_inference(t0, time.monotonic())
                 self.reply(200, {'episode_id': request['episode_id'], 'obs_id': request['obs_id'],
                                 'actions': actions.tolist(), 'inference_ms': inference_ms, 'mock': a.mock})
             except (ValueError, KeyError, TypeError) as exc:
@@ -118,6 +174,11 @@ def main():
                 traceback.print_exc()
                 self.reply(500, {'error': str(exc)})
 
+    import signal
+
+    def _terminate(signum, frame):
+        raise KeyboardInterrupt  # Route SIGTERM through the DVFS-restoring finally block.
+    signal.signal(signal.SIGTERM, _terminate)
     server = HTTPServer((a.host, a.port), Handler)
     print(f'Listening on {a.host}:{a.port}; mock={a.mock}', flush=True)
     try:
@@ -126,6 +187,10 @@ def main():
         pass
     finally:
         server.server_close()
+        if monitor is not None:
+            monitor.close()
+        if dvfs is not None:
+            dvfs.restore()
 
 
 if __name__ == '__main__':
