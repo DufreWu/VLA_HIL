@@ -20,8 +20,15 @@ BOARD_CONFIG = ROOT / 'jetson_orin_nx' / 'benchmark' / 'jetson_orin_nx.yaml'
 CLOSED_LOOP_CONFIG = ROOT / 'jetson_orin_nx' / 'benchmark' / 'closed_loop_dvfs.yaml'
 
 
+DEFAULT_GOVERNORS = dict(cpu='schedutil', gpu='nvhost_podgov')
+
+
 def load_dvfs_configs(path=CLOSED_LOOP_CONFIG, names=None) -> list[dict[str, Any]]:
-    """Return validated configs ``[{name, cpu_khz, gpu_hz, ...}]`` in file order."""
+    """Return validated configs in file order.
+
+    Fixed configs: ``{name, cpu_khz, gpu_hz}``. Governor configs: ``{name, governor: default}``
+    (stock governors) or ``{name, cpu_governor, gpu_governor}``; their cpu_khz/gpu_hz are None.
+    """
     data = yaml.safe_load(Path(path).read_text()) or {}
     configs = data.get('configs')
     if not isinstance(configs, list) or not configs:
@@ -32,6 +39,16 @@ def load_dvfs_configs(path=CLOSED_LOOP_CONFIG, names=None) -> list[dict[str, Any
         if name in seen:
             raise ValueError(f'Duplicate DVFS config name {name!r}')
         seen.add(name)
+        if 'governor' in item or 'cpu_governor' in item or 'gpu_governor' in item:
+            if 'cpu_khz' in item or 'gpu_hz' in item:
+                raise ValueError(f'{name}: use either a governor or fixed frequencies, not both')
+            gov = item.get('governor')
+            if gov not in (None, 'default'):
+                raise ValueError(f'{name}: governor must be "default" (or set cpu_governor/gpu_governor)')
+            out.append(dict(item, name=name, cpu_khz=None, gpu_hz=None,
+                            cpu_governor=str(item.get('cpu_governor', DEFAULT_GOVERNORS['cpu'])),
+                            gpu_governor=str(item.get('gpu_governor', DEFAULT_GOVERNORS['gpu']))))
+            continue
         cpu, gpu = int(item['cpu_khz']), int(item['gpu_hz'])
         if cpu <= 0 or gpu <= 0:
             raise ValueError(f'{name}: frequencies must be positive')
@@ -120,11 +137,19 @@ class PowerMonitor:
     """Background VDD_IN sampler with server-clock episode windows."""
 
     def __init__(self, ina_path: str | None, interval_s: float = 0.005,
-                 reader: Callable[[], float | None] | None = None, clock=time.monotonic):
+                 reader: Callable[[], float | None] | None = None, clock=time.monotonic,
+                 freq_reader: Callable[[], tuple[float | None, float | None]] | None = None,
+                 freq_interval_s: float = 0.1):
         self.interval_s = max(float(interval_s), 0.001)
         ina_path = resolve_ina_path(ina_path)
         self.reader = reader or (lambda: read_vdd_in_power(ina_path))
         self.clock = clock
+        # Optional (mean CPU kHz, GPU Hz) sampler, so governor-controlled configs can be
+        # reported by their actual operating frequency.
+        self.freq_reader = freq_reader
+        self.freq_every = max(1, round(float(freq_interval_s) / self.interval_s))
+        self.n_sampled = 0
+        self.freq_samples: list[tuple[float, float | None, float | None]] = []
         self.samples: list[tuple[float, float]] = []
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -145,11 +170,20 @@ class PowerMonitor:
 
     def sample_once(self):
         t, p = self.clock(), self.reader()
-        if p is not None:
-            with self.lock:
+        freq = None
+        if self.freq_reader is not None and self.n_sampled % self.freq_every == 0:
+            freq = self.freq_reader()
+        self.n_sampled += 1
+        with self.lock:
+            if p is not None:
                 self.samples.append((t, float(p)))
-                if self.episode is None and len(self.samples) > 20_000:
-                    del self.samples[:-2_000]  # Keep memory bounded between episodes.
+            if freq is not None:
+                self.freq_samples.append((t, *freq))
+            if self.episode is None:  # Keep memory bounded between episodes.
+                if len(self.samples) > 20_000:
+                    del self.samples[:-2_000]
+                if len(self.freq_samples) > 2_000:
+                    del self.freq_samples[:-200]
 
     def close(self):
         self.stop_event.set()
@@ -178,7 +212,12 @@ class PowerMonitor:
         ep, self.episode = self.episode, None
         with self.lock:
             samples = list(self.samples)
+            freqs = [f for f in self.freq_samples if ep['start'] <= f[0] <= end]
         energy, n = integrate(samples, ep['start'], end)
+
+        def mean_of(idx):
+            vals = [f[idx] for f in freqs if f[idx] is not None]
+            return sum(vals) / len(vals) if vals else None
         wall = end - ep['start']
         inf_energy, inf_time = 0.0, 0.0
         for s, e in ep['inferences']:
@@ -195,6 +234,7 @@ class PowerMonitor:
                     inference_busy_s=inf_time,
                     inference_duty_cycle=inf_time / wall if wall > 0 else None,
                     n_inferences=len(ep['inferences']),
+                    mean_cpu_khz=mean_of(1), mean_gpu_hz=mean_of(2), n_freq_samples=len(freqs),
                     temps_start_c=ep['temps_start'], temps_end_c=read_temperatures())
 
 
@@ -261,6 +301,46 @@ class DvfsController:
         self.current = status
         return status
 
+    def apply_governor(self, cpu_governor: str = DEFAULT_GOVERNORS['cpu'],
+                       gpu_governor: str = DEFAULT_GOVERNORS['gpu'], settle_s: float = 1.0) -> dict[str, Any]:
+        """Hand control back to the given governors over the full hardware frequency range."""
+        for i in range(self.n_cpus):
+            hw_max = read_text(self._cpu(i, 'cpuinfo_max_freq'))
+            hw_min = read_text(self._cpu(i, 'cpuinfo_min_freq'))
+            if hw_max:
+                write_text(self._cpu(i, 'scaling_max_freq'), hw_max)
+            if hw_min:
+                write_text(self._cpu(i, 'scaling_min_freq'), hw_min)
+            write_text(self._cpu(i, 'scaling_governor'), cpu_governor)
+        available = (read_text(self.gpu_path / 'available_frequencies') or '').split()
+        if available:
+            write_text(self.gpu_path / 'max_freq', max(int(x) for x in available))
+            write_text(self.gpu_path / 'min_freq', min(int(x) for x in available))
+        write_text(self.gpu_path / 'governor', gpu_governor)
+        time.sleep(max(settle_s, 0.0))
+        status = self.status()
+        ok = (all(g == cpu_governor for g in status['cpu_governors'])
+              and status['gpu_governor'] == gpu_governor)
+        status.update(requested_cpu_khz=None, requested_gpu_hz=None,
+                      requested_cpu_governor=cpu_governor, requested_gpu_governor=gpu_governor,
+                      frequency_valid=bool(ok))
+        self.current = status
+        return status
+
+    def read_freqs(self) -> tuple[float | None, float | None]:
+        """(mean current CPU frequency over cores in kHz, current GPU frequency in Hz)."""
+        cpus = []
+        for i in range(self.n_cpus):
+            try:
+                cpus.append(int(read_text(self._cpu(i, 'scaling_cur_freq'))))
+            except (TypeError, ValueError):
+                pass
+        try:
+            gpu = int(read_text(self.gpu_path / 'cur_freq'))
+        except (TypeError, ValueError):
+            gpu = None
+        return (sum(cpus) / len(cpus) if cpus else None), gpu
+
     def status(self) -> dict[str, Any]:
         def as_int(v):
             try:
@@ -270,6 +350,8 @@ class DvfsController:
         return dict(cpu_khz=[as_int(read_text(self._cpu(i, 'scaling_cur_freq'))) for i in range(self.n_cpus)],
                     gpu_hz=as_int(read_text(self.gpu_path / 'cur_freq')),
                     emc_hz=as_int(read_text(self.emc_cap_path)) if self.emc_cap_path else None,
+                    cpu_governors=[read_text(self._cpu(i, 'scaling_governor')) for i in range(self.n_cpus)],
+                    gpu_governor=read_text(self.gpu_path / 'governor'),
                     temps_c=read_temperatures())
 
     def restore(self):

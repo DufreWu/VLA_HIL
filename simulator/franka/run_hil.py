@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -19,8 +20,13 @@ def request_json(url, payload=None, timeout=30):
     data = None if payload is None else json.dumps(payload, allow_nan=False).encode()
     req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
     started = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        result = json.loads(response.read(2_000_000))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            result = json.loads(response.read(2_000_000))
+    except urllib.error.HTTPError as exc:
+        # Surface the server's error message instead of a bare "400 Bad Request".
+        detail = exc.read(4096).decode('utf-8', 'replace').strip()
+        raise RuntimeError(f'{url} returned HTTP {exc.code}: {detail or exc.reason}') from exc
     return result, (time.perf_counter()-started)*1000
 
 

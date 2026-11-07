@@ -99,7 +99,8 @@ def main():
         dvfs.take_snapshot()
     if a.energy or a.dvfs_control:
         from jetson_orin_nx.benchmark.dvfs_control import PowerMonitor, DvfsController as _D
-        monitor = PowerMonitor((dvfs or _D()).ina_path, a.power_interval_s).start()
+        board = dvfs or _D()
+        monitor = PowerMonitor(board.ina_path, a.power_interval_s, freq_reader=board.read_freqs).start()
 
     def warmup(count):
         if engine is None:
@@ -121,7 +122,8 @@ def main():
             if self.path != '/health':
                 self.reply(404, {'error': 'unknown endpoint'}); return
             self.reply(200, {'contract': contract(), 'mock': a.mock, 'model': str(a.model),
-                             'energy': monitor is not None, 'dvfs_control': dvfs is not None})
+                             'energy': monitor is not None, 'dvfs_control': dvfs is not None,
+                             'dvfs_modes': ['fixed', 'governor'] if dvfs is not None else []})
 
         def do_POST(self):
             control = {'/dvfs': dvfs, '/episode/start': monitor, '/episode/stop': monitor}
@@ -132,10 +134,15 @@ def main():
                 try:
                     body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0')) or 0) or b'{}')
                     if self.path == '/dvfs':
-                        status = dvfs.apply(body['cpu_khz'], body['gpu_hz'], float(body.get('settle_s', 1.0)))
+                        settle = float(body.get('settle_s', 1.0))
+                        if body.get('cpu_governor') or body.get('gpu_governor'):
+                            status = dvfs.apply_governor(body['cpu_governor'], body['gpu_governor'], settle)
+                        else:
+                            status = dvfs.apply(body['cpu_khz'], body['gpu_hz'], settle)
                         status['name'] = body.get('name')
                         status['warmup_ms'] = warmup(body.get('warmup', a.dvfs_warmup))
                         print(f"DVFS -> {body.get('name')}: {status['cpu_khz'][0]} kHz / {status['gpu_hz']} Hz "
+                              f"governors {status['cpu_governors'][0]}/{status['gpu_governor']} "
                               f"valid={status['frequency_valid']}", flush=True)
                         self.reply(200, status)
                     elif self.path == '/episode/start':

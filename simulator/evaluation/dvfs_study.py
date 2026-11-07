@@ -96,18 +96,131 @@ def group_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def paired_success_tests(rows: list[dict[str, Any]], reference: str) -> list[dict[str, Any]]:
-    """Exact McNemar test of each config's success against ``reference`` on matched episodes."""
-    by_key: dict[tuple[str, int], dict[str, bool]] = {}
+    """Exact McNemar test of each config's success against ``reference`` on matched episodes.
+
+    One test per task (effects can have opposite signs across tasks) plus a pooled 'all' test.
+    """
+    by_key: dict[tuple[str, Any, int], dict[str, bool]] = {}
     for r in rows:
         by_key.setdefault((r['task'], r.get('seed'), int(r['episode'])), {})[r.get('dvfs_config') or 'default'] = bool(r['success'])
     configs = list(dict.fromkeys(r.get('dvfs_config') or 'default' for r in rows))
+    tasks = list(dict.fromkeys(r['task'] for r in rows))
     out = []
-    for cfg in configs:
-        if cfg == reference:
-            continue
-        pairs = [v for v in by_key.values() if reference in v and cfg in v]
-        b = sum(v[reference] and not v[cfg] for v in pairs)
-        c = sum(v[cfg] and not v[reference] for v in pairs)
-        out.append(dict(config=cfg, reference=reference, matched_episodes=len(pairs),
-                        ref_only_success=b, config_only_success=c, mcnemar_p=mcnemar_exact(b, c)))
+    for task in tasks + (['all'] if len(tasks) > 1 else []):
+        for cfg in configs:
+            if cfg == reference:
+                continue
+            pairs = [v for k, v in by_key.items() if (task == 'all' or k[0] == task)
+                     and reference in v and cfg in v]
+            b = sum(v[reference] and not v[cfg] for v in pairs)
+            c = sum(v[cfg] and not v[reference] for v in pairs)
+            out.append(dict(task=task, config=cfg, reference=reference, matched_episodes=len(pairs),
+                            ref_only_success=b, config_only_success=c, mcnemar_p=mcnemar_exact(b, c)))
     return out
+
+
+# ---------------------------------------------------------------- result tables
+
+def _mean(rows, key, scale=1.0):
+    m, _, n = _mean_std(r.get(key) for r in rows)
+    return None if m is None else m * scale
+
+
+def dvfs_table(rows: list[dict[str, Any]], configs: list[dict[str, Any]], reference: str) -> list[dict[str, Any]]:
+    """One row per (config, task): frequencies, task metrics, latency, power, paired p-value."""
+    tests = {(t['task'], t['config']): t['mcnemar_p'] for t in paired_success_tests(rows, reference)}
+    tasks = list(dict.fromkeys(r['task'] for r in rows))
+    table = []
+    for cfg in configs:
+        name = cfg['name']
+        governed = cfg.get('cpu_khz') is None
+        for task in tasks:
+            g = [r for r in rows if (r.get('dvfs_config') or 'default') == name and r['task'] == task]
+            if not g:
+                continue
+            n, k = len(g), sum(bool(r['success']) for r in g)
+            low, high = wilson_ci(k, n)
+            ct = [r['completion_time_s'] for r in g if r['success'] and r.get('completion_time_s') is not None]
+            energy = [r.get('energy_j') for r in g]
+            table.append(dict(
+                config=name,
+                cpu_mode=cfg.get('cpu_governor', 'fixed') if governed else 'fixed',
+                gpu_mode=cfg.get('gpu_governor', 'fixed') if governed else 'fixed',
+                cpu_mhz=_mean(g, 'mean_cpu_khz', 1e-3) if governed else cfg['cpu_khz'] / 1e3,
+                gpu_mhz=_mean(g, 'mean_gpu_hz', 1e-6) if governed else cfg['gpu_hz'] / 1e6,
+                measured_cpu_mhz=_mean(g, 'mean_cpu_khz', 1e-3),
+                measured_gpu_mhz=_mean(g, 'mean_gpu_hz', 1e-6),
+                task=task, episodes=n, successes=k,
+                success_rate_pct=100 * k / n, success_ci95_low_pct=low, success_ci95_high_pct=high,
+                mcnemar_p_vs_reference=None if name == reference else tests.get((task, name)),
+                task_progress=_mean(g, 'task_progress'),
+                completion_time_s=statistics.mean(ct) if ct else None,
+                collision_rate_pct=100 * sum(bool(r['collision']) for r in g) / n,
+                tip_over_rate_pct=_mean(g, 'tip_over', 100.0) if task == 'pushing' else None,
+                ajj_rad_s3=_mean(g, 'ajj'),
+                inference_ms=_mean(g, 'mean_inference_ms'),
+                action_delay_ticks=_mean(g, 'mean_action_delay_ticks'),
+                holding_s=_mean(g, 'holding_duration_s'),
+                mean_power_w=_mean(g, 'mean_power_w'),
+                energy_per_success_j=(sum(energy) / k) if k and all(e is not None for e in energy) else None,
+                frequency_valid_all=all(r.get('dvfs_frequency_valid', True) for r in g),
+                min_real_time_factor=min((r['real_time_factor'] for r in g
+                                          if r.get('real_time_factor') is not None), default=None),
+            ))
+    return table
+
+
+# (header, key, format) for the human-readable tables.
+_DISPLAY = [
+    ('Config', 'config', 's'), ('CPU (MHz)', 'cpu_mhz', 'freq'), ('GPU (MHz)', 'gpu_mhz', 'freq'),
+    ('Task', 'task', 's'), ('N', 'episodes', 'd'), ('SR (%) [95% CI]', 'success_rate_pct', 'sr'),
+    ('p', 'mcnemar_p_vs_reference', 'p'), ('Progress', 'task_progress', '.2f'),
+    ('CT (s)', 'completion_time_s', '.2f'), ('Coll. (%)', 'collision_rate_pct', '.0f'),
+    ('Tip-over (%)', 'tip_over_rate_pct', '.0f'), ('AJJ', 'ajj_rad_s3', '.1f'),
+    ('Inference (ms)', 'inference_ms', '.0f'), ('Delay (ticks)', 'action_delay_ticks', '.1f'),
+    ('Power (W)', 'mean_power_w', '.2f'), ('J/success', 'energy_per_success_j', '.0f'),
+]
+
+
+def _cell(row, key, fmt, latex=False):
+    v = row.get(key)
+    if fmt == 's':
+        return str(v).replace('_', r'\_') if latex else str(v)
+    if fmt == 'freq':
+        mode = row['cpu_mode' if key == 'cpu_mhz' else 'gpu_mode']
+        if mode != 'fixed':
+            return f'{mode} ({v:.0f})' if v is not None else mode
+        return f'{v:.0f}'
+    if v is None:
+        return '--' if latex else '–'
+    if fmt == 'sr':
+        return f"{v:.0f} [{row['success_ci95_low_pct']:.0f}, {row['success_ci95_high_pct']:.0f}]"
+    if fmt == 'p':
+        return '<0.001' if v < 1e-3 else f'{v:.3f}'
+    if fmt == 'd':
+        return str(int(v))
+    return format(v, fmt)
+
+
+def table_markdown(table: list[dict[str, Any]], reference: str) -> str:
+    head = '| ' + ' | '.join(h for h, _, _ in _DISPLAY) + ' |'
+    sep = '|' + '|'.join('---' if f == 's' else '---:' for _, _, f in _DISPLAY) + '|'
+    body = ['| ' + ' | '.join(_cell(r, k, f) for _, k, f in _DISPLAY) + ' |' for r in table]
+    note = (f'\n\np: exact McNemar test of success vs. `{reference}` on the same episodes, per task. '
+            'Governor rows show the measured mean frequency. J/success = total episode energy / successes.')
+    return '\n'.join([head, sep, *body]) + note + '\n'
+
+
+def table_latex(table: list[dict[str, Any]], reference: str) -> str:
+    cols = 'l' + 'r' * (len(_DISPLAY) - 1)
+    lines = [r'\begin{tabular}{' + cols + '}', r'\toprule',
+             ' & '.join(h.replace('%', r'\%') for h, _, _ in _DISPLAY) + r' \\', r'\midrule']
+    prev = None
+    for r in table:
+        if prev is not None and r['config'] != prev:
+            lines.append(r'\midrule')
+        prev = r['config']
+        lines.append(' & '.join(_cell(r, k, f, latex=True).replace('<', '$<$') for _, k, f in _DISPLAY) + r' \\')
+    lines += [r'\bottomrule', r'\end{tabular}',
+              f'% p: exact McNemar vs. {reference} per task; governor rows: measured mean frequency.']
+    return '\n'.join(lines) + '\n'

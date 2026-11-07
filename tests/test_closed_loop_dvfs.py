@@ -12,7 +12,8 @@ import yaml
 
 from simulator.evaluation.policies import _ChunkPolicy, release_delay_ticks
 from simulator.evaluation.dvfs_study import (rotated_order, wilson_ci, mcnemar_exact,
-                                             group_summaries, paired_success_tests, episode_noise_seed)
+                                             group_summaries, paired_success_tests, episode_noise_seed,
+                                             dvfs_table, table_markdown, table_latex)
 from jetson_orin_nx.benchmark.dvfs_control import (PowerMonitor, DvfsController, integrate,
                                                    load_dvfs_configs, CLOSED_LOOP_CONFIG)
 
@@ -116,6 +117,19 @@ class PowerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             mon.end_episode('a')
 
+    def test_episode_reports_mean_frequency(self):
+        now = [0.0]
+        freqs = iter([(1000.0, 300.0), (2000.0, 900.0), (3000.0, 600.0)])
+        mon = PowerMonitor(None, interval_s=0.01, reader=lambda: 5.0, clock=lambda: now[0],
+                           freq_reader=lambda: next(freqs), freq_interval_s=0.05)
+        mon.begin_episode('a')
+        for _ in range(10):  # frequency sampled at samples 0 and 5 ...
+            mon.sample_once()
+            now[0] += 0.01
+        out = mon.end_episode('a', settle_s=0.0)  # ... and 10 (closing sample)
+        self.assertEqual(out['n_freq_samples'], 3)
+        self.assertEqual((out['mean_cpu_khz'], out['mean_gpu_hz']), (2000.0, 600.0))
+
 
 class DvfsControllerTests(unittest.TestCase):
     def test_apply_and_restore_on_fake_sysfs(self):
@@ -151,10 +165,49 @@ class DvfsControllerTests(unittest.TestCase):
 
     def test_shipped_closed_loop_configs(self):
         configs = load_dvfs_configs(CLOSED_LOOP_CONFIG)
-        self.assertEqual([c['name'] for c in configs], ['performance', 'balanced', 'powersave'])
-        self.assertEqual(load_dvfs_configs(CLOSED_LOOP_CONFIG, ['powersave'])[0]['cpu_khz'], 422400)
+        self.assertEqual([c['name'] for c in configs],
+                         ['default', 'gpu_max_cpu_max', 'gpu_max_cpu_min', 'gpu_min_cpu_max', 'gpu_min_cpu_min'])
+        self.assertEqual((configs[0]['cpu_khz'], configs[0]['cpu_governor'], configs[0]['gpu_governor']),
+                         (None, 'schedutil', 'nvhost_podgov'))
+        # Corners are the endpoints of the board's frequency lists.
+        board = yaml.safe_load((ROOT/'jetson_orin_nx/benchmark/jetson_orin_nx.yaml').read_text())['jetson_orin_nx_16g']
+        corners = {(c['cpu_khz'], c['gpu_hz']) for c in configs[1:]}
+        self.assertEqual(corners, {(cpu, gpu) for cpu in (min(board['cpu_freqs']), max(board['cpu_freqs']))
+                                   for gpu in (min(board['gpu_freqs']), max(board['gpu_freqs']))})
+        self.assertEqual(load_dvfs_configs(CLOSED_LOOP_CONFIG, ['gpu_min_cpu_min'])[0]['cpu_khz'], 422400)
         with self.assertRaises(ValueError):
             load_dvfs_configs(CLOSED_LOOP_CONFIG, ['turbo'])
+
+    def test_governor_config_rejects_mixed_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)/'c.yaml'
+            path.write_text(yaml.safe_dump({'configs': [dict(name='x', governor='default', cpu_khz=1)]}))
+            with self.assertRaises(ValueError):
+                load_dvfs_configs(path)
+
+    def test_apply_governor_on_fake_sysfs(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for i in range(2):
+                c = d/'cpu'/f'cpu{i}'/'cpufreq'; c.mkdir(parents=True)
+                for k, v in dict(scaling_governor='userspace', scaling_min_freq=422400,
+                                 scaling_max_freq=422400, cpuinfo_min_freq=115200,
+                                 cpuinfo_max_freq=1984000, scaling_cur_freq=1000000 + i * 200000).items():
+                    (c/k).write_text(str(v))
+            g = d/'gpu'; g.mkdir()
+            for k, v in dict(governor='userspace', min_freq=306000000, max_freq=306000000,
+                             cur_freq=612000000, available_frequencies='306000000 918000000').items():
+                (g/k).write_text(str(v))
+            cfg = d/'board.yaml'
+            cfg.write_text(yaml.safe_dump({'jetson_orin_nx_16g': dict(
+                cpu_path=str(d/'cpu'), gpu_path=str(g), cpu_cores_num=2, ina_path=None)}))
+            ctl = DvfsController(cfg)
+            status = ctl.apply_governor('schedutil', 'nvhost_podgov', settle_s=0)
+            self.assertTrue(status['frequency_valid'])
+            self.assertEqual((d/'cpu/cpu1/cpufreq/scaling_min_freq').read_text(), '115200')
+            self.assertEqual((d/'cpu/cpu1/cpufreq/scaling_max_freq').read_text(), '1984000')
+            self.assertEqual(((g/'min_freq').read_text(), (g/'max_freq').read_text()), ('306000000', '918000000'))
+            self.assertEqual(ctl.read_freqs(), (1100000.0, 612000000))
 
 
 class StudyStatisticsTests(unittest.TestCase):
@@ -186,6 +239,49 @@ class StudyStatisticsTests(unittest.TestCase):
         test = paired_success_tests(rows, 'performance')[0]
         self.assertEqual((test['ref_only_success'], test['config_only_success']), (3, 0))
         json.dumps(group_summaries(rows), allow_nan=False)
+
+    def test_paired_tests_are_per_task(self):
+        # Opposite effects per task cancel when pooled.
+        rows = []
+        for ep in range(8):
+            rows += [dict(task='grasping', episode=ep, dvfs_config='ref', success=True),
+                     dict(task='grasping', episode=ep, dvfs_config='low', success=False),
+                     dict(task='pushing', episode=ep, dvfs_config='ref', success=False),
+                     dict(task='pushing', episode=ep, dvfs_config='low', success=True)]
+        tests = {t['task']: t for t in paired_success_tests(rows, 'ref')}
+        self.assertLess(tests['grasping']['mcnemar_p'], 0.01)
+        self.assertLess(tests['pushing']['mcnemar_p'], 0.01)
+        self.assertEqual(tests['all']['mcnemar_p'], 1.0)
+
+    def test_dvfs_table(self):
+        configs = [dict(name='default', cpu_khz=None, gpu_hz=None, cpu_governor='schedutil',
+                        gpu_governor='nvhost_podgov'),
+                   dict(name='gpu_max_cpu_max', cpu_khz=1984000, gpu_hz=918000000)]
+        def row(cfg, task, ep, ok):
+            return dict(task=task, episode=ep, dvfs_config=cfg, success=ok, collision=False,
+                        completion_time_s=10.0 if ok else None, energy_j=200.0, mean_power_w=7.0,
+                        task_progress=1.0 if ok else 0.3, tip_over=0.0 if task == 'pushing' else None,
+                        ajj=50.0, mean_inference_ms=800.0, mean_action_delay_ticks=20.0,
+                        mean_cpu_khz=1500000.0, mean_gpu_hz=600000000.0, real_time_factor=1.0,
+                        dvfs_frequency_valid=True)
+        rows = [row(c, t, e, e < 2) for c in ('default', 'gpu_max_cpu_max')
+                for t in ('grasping', 'pushing') for e in range(4)]
+        table = dvfs_table(rows, configs, 'default')
+        self.assertEqual([(r['config'], r['task']) for r in table],
+                         [('default', 'grasping'), ('default', 'pushing'),
+                          ('gpu_max_cpu_max', 'grasping'), ('gpu_max_cpu_max', 'pushing')])
+        ref, fixed = table[0], table[2]
+        self.assertEqual((ref['cpu_mode'], ref['cpu_mhz'], ref['gpu_mhz']), ('schedutil', 1500.0, 600.0))
+        self.assertEqual((fixed['cpu_mhz'], fixed['gpu_mhz']), (1984.0, 918.0))
+        self.assertIsNone(ref['mcnemar_p_vs_reference'])
+        self.assertEqual(fixed['mcnemar_p_vs_reference'], 1.0)
+        self.assertEqual((fixed['success_rate_pct'], fixed['energy_per_success_j']), (50.0, 400.0))
+        self.assertIsNone(table[0]['tip_over_rate_pct'])
+        md, tex = table_markdown(table, 'default'), table_latex(table, 'default')
+        self.assertIn('schedutil (1500)', md)
+        self.assertEqual(sum(l.startswith('| ') for l in md.splitlines()), 5)  # header + 4 rows
+        self.assertIn(r'gpu\_max\_cpu\_max', tex)
+        json.dumps(table, allow_nan=False)
 
 
 if __name__ == '__main__':

@@ -2,7 +2,9 @@ r"""Run with Isaac Sim 6.0 Python: python simulator/evaluate.py --task both.
 
 Closed-loop DVFS study (Jetson server started with --dvfs-control):
   python simulator/evaluate.py --policy remote --server http://NX_IP:8080 --mode continuous \
+      --task both --episodes 20 --execute-steps 25 --prefetch 20 \
       --dvfs-configs jetson_orin_nx/benchmark/closed_loop_dvfs.yaml --energy --headless
+  Tables: <output>/table_dvfs.{csv,md,tex} (one row per config and task).
 """
 import argparse
 import csv
@@ -17,7 +19,8 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from simulator.evaluation.metrics import TaskConfig, EpisodeMetrics, average_joint_jerk, summarize
 from simulator.evaluation.dvfs_study import (rotated_order, episode_noise_seed, group_summaries,
-                                             paired_success_tests)
+                                             paired_success_tests, dvfs_table, table_markdown, table_latex)
+from simulator.posthoc_metrics import task_progress, tip_over
 
 
 def _json_default(value):
@@ -69,6 +72,17 @@ def add_ajj_to_summary(summary, episode_rows):
                                 else (0.0 if values else None))
     return summary
 
+
+
+def write_dvfs_tables(output, rows, dvfs_configs, reference):
+    """Per-(config, task) result table as CSV, Markdown and LaTeX; rewritten after every episode."""
+    table = dvfs_table(rows, dvfs_configs, reference)
+    with (output/'table_dvfs.csv').open('w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=list(table[0].keys()))
+        writer.writeheader()
+        writer.writerows(table)
+    (output/'table_dvfs.md').write_text(table_markdown(table, reference))
+    (output/'table_dvfs.tex').write_text(table_latex(table, reference))
 
 
 def parse_args():
@@ -162,6 +176,10 @@ def main():
                               starvation_abort_s=args.starvation_abort_s)
         if args.dvfs_configs and not policy.health.get('dvfs_control'):
             raise RuntimeError('Policy server was not started with --dvfs-control')
+        if any(c is not None and c.get('cpu_khz') is None for c in dvfs_configs) \
+                and 'governor' not in policy.health.get('dvfs_modes', []):
+            raise RuntimeError('The policy server does not support governor DVFS configs (e.g. "default"); '
+                               'update jetson_orin_nx/ on the Jetson to this version and restart the server.')
         if args.energy and not policy.health.get('energy'):
             raise RuntimeError('Policy server was not started with --energy/--dvfs-control')
     elif args.policy == 'local':
@@ -194,9 +212,12 @@ def main():
     def switch_dvfs(cfg):
         if cfg is None or current_dvfs['name'] == cfg['name']:
             return current_dvfs['status']
-        status, _ = request_json(server+'/dvfs', dict(name=cfg['name'], cpu_khz=cfg['cpu_khz'],
-                                 gpu_hz=cfg['gpu_hz'], settle_s=args.dvfs_settle_s,
-                                 warmup=args.dvfs_warmup), timeout=120)
+        body = dict(name=cfg['name'], settle_s=args.dvfs_settle_s, warmup=args.dvfs_warmup)
+        if cfg.get('cpu_khz') is None:
+            body.update(cpu_governor=cfg['cpu_governor'], gpu_governor=cfg['gpu_governor'])
+        else:
+            body.update(cpu_khz=cfg['cpu_khz'], gpu_hz=cfg['gpu_hz'])
+        status, _ = request_json(server+'/dvfs', body, timeout=120)
         if not status.get('frequency_valid'):
             print(f"[WARN] DVFS {cfg['name']} not reached: {status}", flush=True)
         current_dvfs.update(name=cfg['name'], status=status)
@@ -257,6 +278,8 @@ def main():
                     pace = args.mode == 'continuous' and not args.no_realtime and args.policy in ('remote', 'local')
                     trace = args.output/f'{prefix}_{episode:04d}{suffix}_trace.jsonl'
                     joint_positions = []
+                    cube_positions = []
+                    cube_peak_speed = 0.0
                     # Sample success at 60 Hz; contacts at every physics step, actions at 20 Hz.
                     start_sim = scene.sm.get_simulation_time()
                     with trace.open('w') as log:
@@ -285,6 +308,8 @@ def main():
                                 joint_state = np.asarray(scene.state(), dtype=np.float64)
                                 # Actual executed 7-DOF arm pose, sampled each 60 Hz physics step.
                                 joint_positions.append(joint_state[:7].copy())
+                                cube_positions.append(position)
+                                cube_peak_speed = max(cube_peak_speed, float(np.linalg.norm(velocity[:3])))
                                 metrics.update(after-start_sim, position, velocity,
                                                monitor.fingers == FINGERS, monitor.collision)
                                 log.write(json.dumps(dict(t=after-start_sim, position=position,
@@ -338,9 +363,17 @@ def main():
                                   requested_initial=requested_initial, noise_seed=noise_seed,
                                   mode=args.mode, control_ticks=tick, deadline_misses=deadline_misses,
                                   real_time_factor=metrics.elapsed / wall_s if wall_s > 0 else None)
+                    if cube_positions:
+                        result.update(
+                            task_progress=float(task_progress(task, cube_positions, target, config.lift_m,
+                                                              config.target_tolerance_m).max()),
+                            cube_peak_speed=cube_peak_speed,
+                            tip_over=float(tip_over(cube_positions, 0.010)) if task == 'pushing' else None)
                     if dvfs_cfg is not None:
                         result.update(dvfs_config=dvfs_tag, requested_cpu_khz=dvfs_cfg['cpu_khz'],
                                       requested_gpu_hz=dvfs_cfg['gpu_hz'],
+                                      dvfs_governors=None if dvfs_cfg['cpu_khz'] is not None else
+                                      [dvfs_cfg['cpu_governor'], dvfs_cfg['gpu_governor']],
                                       actual_cpu_khz=(dvfs_status or {}).get('cpu_khz', [None])[0],
                                       actual_gpu_hz=(dvfs_status or {}).get('gpu_hz'),
                                       dvfs_frequency_valid=bool((dvfs_status or {}).get('frequency_valid')))
@@ -350,6 +383,8 @@ def main():
                                       inference_energy_j=energy.get('inference_energy_j'),
                                       inference_duty_cycle=energy.get('inference_duty_cycle'),
                                       n_power_samples=energy.get('n_power_samples'),
+                                      mean_cpu_khz=energy.get('mean_cpu_khz'),
+                                      mean_gpu_hz=energy.get('mean_gpu_hz'),
                                       soc_temp_start_c=max(energy.get('temps_start_c', {}).values(), default=None),
                                       soc_temp_end_c=max(energy.get('temps_end_c', {}).values(), default=None))
                     if pace and result['real_time_factor'] is not None and result['real_time_factor'] < 0.9:
@@ -369,6 +404,7 @@ def main():
                             writer.writeheader()
                             writer.writerows(dvfs_summaries)
                         save_json(args.output/'paired_tests.json', paired_success_tests(rows, reference))
+                        write_dvfs_tables(args.output, rows, dvfs_configs, reference)
                     if reference is None:  # Mixed-config rows would make these meaningless.
                         summaries, by_seed = summarize_runs(rows, tasks, args.seeds)
                         save_json(args.output/'summary.json', summaries)
@@ -383,6 +419,8 @@ def main():
                             writer.writerows(by_seed)
                     print(json.dumps(result, default=_json_default), flush=True)
         save_json(args.output/'status.json', dict(status='completed', episodes=len(rows)))
+        if reference is not None and rows:
+            print('\n' + (args.output/'table_dvfs.md').read_text(), flush=True)
     except BaseException as exc:
         exit_code = 1
         import traceback
