@@ -145,7 +145,7 @@ class Jetson_Orin_NX:
             
             if os.path.exists(target_path):
                 with open(target_path, "r") as f:
-                    content = f.read().strip() # 只读一次并保存结果
+                    content = f.read().strip() # Read once and keep the result
                     if not content:
                         return 0
                     freq = int(content)

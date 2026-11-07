@@ -85,6 +85,9 @@ def parse_args():
     p.add_argument('--execute-steps', type=int, default=10)
     p.add_argument('--prefetch', type=int, default=5)
     p.add_argument('--allow-mock', action='store_true')
+    p.add_argument('--no-realtime', action='store_true',
+                   help='Continuous mode only: do not pace simulation to wall-clock time. Without pacing, '
+                        'inference latency in simulation ticks is distorted by the real-time factor.')
     a = p.parse_args()
     if a.episodes < 1 or not 1 <= a.execute_steps <= 50 or not 0 <= a.prefetch < a.execute_steps:
         p.error('episodes must be positive; execute-steps must be between 1 and 50; prefetch must be in [0, execute_steps)')
@@ -161,7 +164,7 @@ def main():
             rng = np.random.default_rng(seed)
             prefix = f'{task}_seed{seed}' if multi_seed else task
             for episode in range(args.episodes):
-                initial = [float(rng.uniform(.40, .50)), float(rng.uniform(-.25, -.15)), .0258]
+                initial = [float(rng.uniform(.42, .48)), float(rng.uniform(-.25, -.15)), .0258]
                 target = [initial[0], initial[1]+.20, .0258]
                 scene.reset(initial)
                 initial = scene.cube_position().tolist()
@@ -184,6 +187,7 @@ def main():
                 clipped = 0
                 preview_frames = []
                 wall_start = time.perf_counter()
+                pace = args.mode == 'continuous' and not args.no_realtime and args.policy in ('remote', 'local')
                 trace = args.output/f'{prefix}_{episode:04d}_trace.jsonl'
                 joint_positions = []
                 # Sample success at 60 Hz; contacts at every physics step, actions at 20 Hz.
@@ -224,6 +228,10 @@ def main():
                             _, rgb = scene.observation()
                             preview_frames.append(Image.fromarray(rgb))
                         tick += 1
+                        if pace:
+                            remaining = wall_start + tick/20 - time.perf_counter()
+                            if remaining > 0:
+                                time.sleep(remaining)
                 if preview_frames:
                     preview_frames[0].save(args.output/f'{prefix}_{episode:04d}.gif',
                                            save_all=True, append_images=preview_frames[1:],

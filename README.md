@@ -1,15 +1,10 @@
 # Franka VLA-HIL: Isaac Sim 6.0 + SmolVLA + Jetson Orin NX 16GB
 
-This package implements the four requested stages. Merge its folders into your
-`VLA_HIL` project. It does not replace your existing `franka_pick_place.py` or
-`README.md`. Run commands below from the `VLA_HIL` project root.
-
-**Validation status:** The current workspace has a verified smoke-training pass for
-the multi-task SmolVLA pipeline on CPU, and the repository regression tests pass.
-Full multi-task training/export is still dependent on a compatible CUDA/PyTorch
-stack for the host GPU. This README reflects the working command set and the
-current project status, not a claim that the full production run has completed on
-this machine.
+Hardware-in-the-loop evaluation of a SmolVLA policy for Franka Panda grasping and
+pushing: demonstrations are collected in Isaac Sim 6.0, the policy is fine-tuned with
+LeRobot 0.4.3, and inference runs either on a GPU server or on a Jetson Orin NX over
+HTTP. Run all commands from the project root. Evaluation details are in
+[simulator/README.md](simulator/README.md).
 
 ## Files
 
@@ -26,13 +21,168 @@ this machine.
 | 4 | `simulator/franka/run_hil.py` | Host-side synchronous/continuous closed loop |
 | 4 | `jetson_orin_nx/diagnose.py` | Read-only JetPack/Python/CUDA report |
 
+## Deployment overview: simulation server + Jetson Orin NX
+
+The HIL experiments use two machines:
+
+| Machine | Role | Python environments |
+|---|---|---|
+| **Simulation server** (x86 + RTX GPU) | Isaac Sim simulation, demonstration collection, dataset conversion, SmolVLA training/export, closed-loop evaluation | `isaacsim` environment (simulation) + separate training environment (LeRobot 0.4.3) |
+| **Jetson Orin NX 16GB** | HTTP inference server for the exported model (`/health`, `/infer`); DVFS latency/energy benchmark | ARM64 PyTorch with JetPack CUDA + LeRobot 0.4.3 |
+
+Data flow: simulation (server) → RGB image + 9-D joint state → HTTP → Jetson inference →
+9-D joint targets → simulation. Below, `JETSON_IP` is the Jetson's LAN address and `SERVER`
+the server's SSH address. Run all commands from the project root on both machines.
+
+### A. Simulation server
+
+**1. Environments** (keep them separate; see "0. Environments" below):
+
+```bash
+# Simulation: Isaac Sim 6.0.0.1, Python 3.12
+python3.12 -m venv .venv-isaacsim
+.venv-isaacsim/bin/python -m pip install 'isaacsim[all,extscache]==6.0.0.1' \
+  --index-url https://pypi.org/simple --extra-index-url https://pypi.nvidia.com
+
+# Training: Python 3.10/3.11 + CUDA PyTorch matching the server GPU
+python -m pip install -r requirements-training.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+Without a display (e.g. over SSH), pass `--headless` to the simulator scripts; run long jobs in `tmux`.
+
+**2. Collect → check → convert → train** (details in [training/README.md](training/README.md)):
+
+```bash
+# isaacsim environment
+python simulator/franka/collect_demos.py --task both --episodes 5 --max-attempts 50 \
+  --output data/raw_multitask --seed 42 --headless
+
+# training environment
+python training/validate_multitask_dataset.py --root data/raw_multitask --task both --strict
+python training/convert_dataset.py --raw data/raw_multitask --output data/lerobot \
+  --repo-id local/franka_multitask_v2 --val-fraction 0.2 --seed 7 --min-per-task 2
+python training/train_smolvla.py --dataset data/lerobot/train \
+  --output outputs/smolvla_multitask --export outputs/nx_multitask_v2 \
+  --steps 5000 --batch-size 8 --workers 4 --seed 7
+```
+
+**3. (Optional) server-side inference baseline** for comparison with the Jetson:
+
+```bash
+# Terminal 1, training environment
+python jetson_orin_nx/policy_server.py --model outputs/nx_multitask_v2 --host 127.0.0.1 --port 8080 --device cuda
+# Terminal 2, isaacsim environment
+python simulator/evaluate.py --task both --policy remote --server http://127.0.0.1:8080 \
+  --mode sync --episodes 10 --output outputs/eval_server
+```
+
+**4. Copy the exported model to the Jetson** (the whole directory, not only the weights):
+
+```bash
+rsync -av outputs/nx_multitask_v2/ JETSON_USER@JETSON_IP:PROJECT_DIR/outputs/nx_multitask_v2/
+```
+
+**5. Closed-loop evaluation against the Jetson** (isaacsim environment, after B.5):
+
+```bash
+curl http://JETSON_IP:8080/health        # check connectivity first
+
+python simulator/evaluate.py --task both --policy remote --server http://JETSON_IP:8080 \
+  --mode sync --episodes 10 --output outputs/eval_jetson
+
+# Several seeds
+python simulator/evaluate.py --task both --policy remote --server http://JETSON_IP:8080 \
+  --mode sync --episodes 10 --seeds 42 43 44 --output outputs/eval_jetson_seeds
+
+# Continuous mode once sync works
+python simulator/evaluate.py --task both --policy remote --server http://JETSON_IP:8080 \
+  --mode continuous --episodes 10 --execute-steps 10 --prefetch 5 --output outputs/eval_jetson_continuous
+```
+
+Output directories must be new. If the server cannot reach the Jetson's LAN address,
+open a reverse SSH tunnel on the Jetson and use `http://127.0.0.1:8080` on the server:
+
+```bash
+# On the Jetson
+ssh -N -R 8080:127.0.0.1:8080 SERVER
+```
+
+A tunnel adds round-trip latency; report whether latency results were measured through one.
+
+### B. Jetson Orin NX
+
+**1. System setup:**
+
+```bash
+sudo nvpmodel -m 0                  # MAXN power mode (used in our experiments)
+sudo nvpmodel -q
+python jetson_orin_nx/diagnose.py   # read-only JetPack / Python / CUDA report
+```
+
+**2. Python environment:** first install the ARM64 CUDA `torch`/`torchvision` wheels matching
+the installed JetPack (NVIDIA Jetson wheels) and check that `torch.cuda.is_available()` is
+`True`. Then pin them before installing LeRobot so pip cannot replace them with CPU builds:
+
+```bash
+python -m pip freeze | grep -E '^(torch|torchvision|torchaudio)==' > jetson-torch-constraints.txt
+python -m pip install -c jetson-torch-constraints.txt 'lerobot[smolvla]==0.4.3'
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+**3. Code and model:** clone this repository and make sure `outputs/nx_multitask_v2/` has been
+copied from the server (A.4). The first model load downloads the SmolVLA backbone and
+tokenizer from Hugging Face; once cached, `HF_HUB_OFFLINE=1` allows offline use.
+
+**4. Test the link with the mock server** (no model loaded):
+
+```bash
+python jetson_orin_nx/policy_server.py --mock --host 0.0.0.0 --port 8080
+```
+
+On the server, run one episode with `--allow-mock` (the arm holds its pose, so failure is expected):
+
+```bash
+python simulator/evaluate.py --task grasping --policy remote --server http://JETSON_IP:8080 \
+  --mode sync --allow-mock --episodes 1 --output outputs/hil_mock
+```
+
+If the connection is refused, check the firewall: `sudo ufw allow 8080/tcp`.
+
+**5. Start the real inference server** (preferably in `tmux`):
+
+```bash
+python jetson_orin_nx/policy_server.py --model outputs/nx_multitask_v2 \
+  --host 0.0.0.0 --port 8080 --device cuda
+```
+
+Then run A.5 on the server. To log power and temperature on the Jetson meanwhile:
+
+```bash
+tegrastats --interval 100 --logfile nx_tegrastats.log
+```
+
+**6. DVFS latency and energy benchmark** (Jetson only, no server needed). The script writes
+`/sys/.../cpufreq` and the GPU devfreq nodes, so it needs root; `sudo -E $(which python)` keeps
+the interpreter with LeRobot installed. Stop the inference server first so it does not share the GPU.
+
+```bash
+sudo -E $(which python) jetson_orin_nx/benchmark/benchmark_dvfs.py \
+  --model outputs/nx_multitask_v2 --output jetson_orin_nx/benchmark/results \
+  --task both --samples-per-config 20 --repetitions 3 --collect-energy --seed 7
+```
+
+Frequency lists and sysfs paths are in [jetson_orin_nx/benchmark/jetson_orin_nx.yaml](jetson_orin_nx/benchmark/jetson_orin_nx.yaml).
+The script restores the original DVFS settings on exit; if it is killed, run
+`sudo nvpmodel -m 0` (or reboot) to restore the defaults. Plot the result CSVs with
+`jetson_orin_nx/benchmark/data_analysis_*.ipynb`.
+
 ## 0. Environments
 
 Keep THREE environments conceptually separate:
 
-1. **Simulation host:** your existing working `(env isaacsim)` environment, Isaac
-   Sim **6.0.0**, NumPy and Pillow. Do not install LeRobot into it. Use `python`
-   as you did for the working demo. A binary installation can instead use
+1. **Simulation host:** an Isaac Sim **6.0.0** environment with NumPy and
+   Pillow. Do not install LeRobot into it. A binary installation can instead use
    `/path/to/isaac-sim/python.sh` for the simulator scripts.
 2. **Training host:** a separate Python 3.10/3.11 environment with a CUDA PyTorch
    build compatible with your host GPU (including Blackwell if applicable).
@@ -249,7 +399,7 @@ request IDs, response decoding and actuation only. It does not emulate VLA.
 On the training host, start the real server:
 
 ```bash
-python jetson_orin_nx/policy_server.py --model outputs/nx_model --device cuda
+python jetson_orin_nx/policy_server.py --model outputs/nx_multitask_v2 --device cuda
 ```
 
 In another terminal with Isaac Sim activated:
@@ -269,8 +419,8 @@ On NX, first inspect the actual installed stack:
 python jetson_orin_nx/diagnose.py
 ```
 
-JetPack is not known in this conversation, so no unverified NVIDIA wheel URL or
-universal Docker tag is provided. Install compatible CUDA-enabled ARM64 PyTorch
+The correct wheels depend on the installed JetPack, so no wheel URL or Docker tag
+is given here. Install compatible CUDA-enabled ARM64 PyTorch
 and torchvision for that JetPack first. Verify `torch.cuda.is_available()`.
 To keep pip from replacing those working wheels, create constraints from their
 installed versions in the NX environment:
@@ -284,11 +434,11 @@ python jetson_orin_nx/diagnose.py
 If dependency resolution conflicts, resolve it against the actual JetPack report;
 do not remove constraints and silently install different torch wheels.
 
-Copy the project and full `outputs/nx_model` bundle to NX. First model load may
+Copy the project and full `outputs/nx_multitask_v2` bundle to NX. First model load may
 also need Hugging Face cache/internet for the backbone/tokenizer. Then:
 
 ```bash
-python jetson_orin_nx/policy_server.py --model outputs/nx_model --device cuda --port 8080
+python jetson_orin_nx/policy_server.py --model outputs/nx_multitask_v2 --device cuda --port 8080
 ```
 
 On the simulator host:

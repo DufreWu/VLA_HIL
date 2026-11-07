@@ -174,6 +174,48 @@ class PipelineTests(unittest.TestCase):
             if 'policy' in locals():
                 policy.executor.shutdown(wait=True, cancel_futures=True)
 
+    def test_continuous_queue_never_reverts_to_initial_pose(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from simulator.evaluation.policies import _ChunkPolicy
+
+        class DummyScene:
+            def state(self):
+                return np.zeros(9, dtype=np.float32)
+            def observation(self):
+                return np.zeros(9, dtype=np.float32), np.zeros((256, 256, 3), dtype=np.uint8)
+
+        gate = threading.Event()
+
+        class SlowPolicy(_ChunkPolicy):
+            # Chunk slot i encodes its intended tick (obs_id + i) in joint 1.
+            def __init__(self):
+                self.execute_steps, self.mode, self.prefetch = 10, 'continuous', 5
+                self.executor = ThreadPoolExecutor(max_workers=1)
+            def _request(self, payload):
+                gate.wait(5)
+                actions = np.zeros((50, 9), dtype=np.float32)
+                actions[:, 0] = 0.001 * (payload['obs_id'] + np.arange(50))
+                return payload, dict(episode_id=payload['episode_id'], obs_id=payload['obs_id'],
+                                     actions=actions.tolist(), inference_ms=1.0), 1.0
+
+        policy = SlowPolicy()
+        try:
+            policy.reset(DummyScene(), 'grasping', None, None)
+            policy.act(0.0)                              # request observed at tick 0
+            gate.set(); policy.future.result()
+            gate.clear()                                 # later requests stay in flight
+            for tick in range(1, 9):
+                # Slot for this tick is executed even while the next request is in flight
+                # (the old code returned the initial pose here).
+                self.assertAlmostEqual(float(policy.act(0.0)[0]), 0.001 * tick, places=6)
+            self.assertFalse(policy.future.done())
+            gate.set(); policy.future.result()
+            # New chunk (observed at tick 6) replaces the queue, still aligned with ticks.
+            self.assertAlmostEqual(float(policy.act(0.0)[0]), 0.001 * 9, places=6)
+        finally:
+            gate.set()
+            policy.executor.shutdown(wait=True, cancel_futures=True)
+
     def test_local_policy_uses_local_engine(self):
         class DummyScene:
             def state(self):

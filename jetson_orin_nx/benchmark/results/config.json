@@ -98,7 +98,7 @@
     "device": "cuda",
     "exists": true,
     "name": "nx_multitask_v2",
-    "path": "/home/user/Documents/Github/VLA_HIL/outputs/nx_multitask_v2",
+    "path": "outputs/nx_multitask_v2",
     "task": "Pick up the red cube and place it at the target on the table."
   },
   "nvpmodel": {

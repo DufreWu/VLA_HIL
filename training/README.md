@@ -7,7 +7,6 @@ This document records the recommended execution order for the Franka multi-task 
 Run this first to confirm the core protocol, mock transport, and multi-task contract logic still pass before any Isaac Sim collection.
 
 ```bash
-cd /home/chenwu/Documents/Github/VLA_HIL
 python -m unittest discover -s tests -v
 ```
 
@@ -18,7 +17,6 @@ This is the minimal validation gate for the repo. It does not require Isaac Sim.
 This step must run on a machine with Isaac Sim installed and the Franka scene runtime available.
 
 ```bash
-cd /home/chenwu/Documents/Github/VLA_HIL
 python simulator/franka/collect_demos.py \
   --task both \
   --episodes 5 \
@@ -39,7 +37,6 @@ This collection step generates the raw successful demonstrations used by the con
 Validate the collected demonstrations before trying to train.
 
 ```bash
-cd /home/chenwu/Documents/Github/VLA_HIL
 python training/validate_multitask_dataset.py \
   --root data/raw_multitask \
   --task both \
@@ -62,7 +59,6 @@ If this step fails, do not proceed to training.
 Run the conversion step only after the raw dataset is valid.
 
 ```bash
-cd /home/chenwu/Documents/Github/VLA_HIL
 python training/convert_dataset.py \
   --raw data/raw_multitask \
   --output data/lerobot \
@@ -84,7 +80,6 @@ This creates the train/validation split used by the model trainer:
 This is the safety check before full fine-tuning.
 
 ```bash
-cd /home/chenwu/Documents/Github/VLA_HIL
 python training/train_smolvla.py \
   --dataset data/lerobot/train \
   --device cpu \
@@ -100,7 +95,6 @@ This uses a short training run and exports to:
 Only after the smoke pass is confirmed.
 
 ```bash
-cd /home/chenwu/Documents/Github/VLA_HIL
 python training/train_smolvla.py \
   --dataset data/lerobot/train \
   --output outputs/smolvla_multitask \

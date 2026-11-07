@@ -1,185 +1,121 @@
 # Isaac Sim manipulation evaluation
 
-Franka Panda grasping and pushing tasks with episode-level success, collision and
-completion-time metrics. The package includes scripted reference controllers,
-a remote policy client, regression tests and results for 100 episodes per task.
+Franka Panda grasping and pushing in Isaac Sim 6.0, driven by a scripted reference
+controller, a remote policy server (RTX host or Jetson Orin NX) or a local checkpoint.
+Run all commands from the project root; output directories must be new.
 
 ## Installation
 
-Requirements: an RTX-capable NVIDIA GPU, a compatible NVIDIA driver, Python 3.12,
-and Isaac Sim 6.0.0.1. From the package root:
+Requires an RTX-capable NVIDIA GPU, Python 3.12 and Isaac Sim 6.0.0.1:
 
 ```bash
 python3.12 -m venv .venv-isaacsim
-.venv-isaacsim/bin/python -m pip install --upgrade pip
 .venv-isaacsim/bin/python -m pip install 'isaacsim[all,extscache]==6.0.0.1' \
   --index-url https://pypi.org/simple --extra-index-url https://pypi.nvidia.com
 ```
 
-Isaac Sim prompts for the NVIDIA Omniverse license agreement on first use.
-An existing Isaac Sim 6.0 environment or its `python.sh` can also run the scripts.
-The virtual environment and NVIDIA assets are installed separately from this ZIP.
+The policy server and `--policy local` need the separate training environment
+(`requirements-training.txt`, LeRobot 0.4.3); it is not compatible with Isaac Sim's Python.
 
-## Running tasks
-
-Run commands from the project root. Output directories must be new.
+## Running
 
 ```bash
-# Inspect one episode of each task.
-python simulator/evaluate.py --task both --episodes 1 --save-preview \
-  --output outputs/smoke
+# Scripted controller, one episode per task, with camera GIF.
+python simulator/evaluate.py --task both --episodes 1 --save-preview --output outputs/smoke
 
-# Run a single-task remote evaluation with a live model server.
-python simulator/evaluate.py --task grasping --policy remote --server http://127.0.0.1:8080 \
-  --mode sync --episodes 5 --execute-steps 10 --timeout 20 --output outputs/evaluation_grasping
-
-# Run local inference directly from a trained checkpoint on this machine.
-# IMPORTANT: do this in the training environment, not the Isaac Sim environment.
-python simulator/evaluate.py --task grasping --policy local --model outputs/nx_multitask_v2 \
-  --device cpu --mode sync --episodes 2 --execute-steps 10 --output outputs/evaluation_local
-
-# Run a continuous remote evaluation on the same model server.
-python simulator/evaluate.py --task both --policy remote --server http://127.0.0.1:8080 \
-  --mode continuous --episodes 2 --execute-steps 10 --prefetch 5 --output outputs/evaluation_continuous
-
-# Mock transport test before Jetson inference.
+# Transport test with the mock server (robot holds its pose; failure is expected).
 python jetson_orin_nx/policy_server.py --mock --host 127.0.0.1 --port 8081
 python simulator/evaluate.py --task grasping --policy remote --server http://127.0.0.1:8081 \
-  --mode continuous --allow-mock --episodes 1 --output outputs/hil_grasping_mock
+  --mode sync --allow-mock --episodes 1 --output outputs/mock
 
-# Remote evaluation against a real server.
-python simulator/evaluate.py --task grasping --policy remote --server http://JETSON_IP:8080 \
-  --mode continuous --episodes 10 --output outputs/hil_grasping
-python simulator/evaluate.py --task pushing --policy remote --server http://JETSON_IP:8080 \
-  --mode continuous --episodes 10 --output outputs/hil_pushing
+# Policy server (training env), on this host or on the Jetson:
+python jetson_orin_nx/policy_server.py --model outputs/nx_multitask_v2 --host 0.0.0.0 --port 8080 --device cuda
 ```
 
-Direct Python commands use the active environment. `--save-preview` exports a 2 Hz
-camera GIF and a final PNG. For the current project, `--mode continuous` is the
-relevant remote-control mode; the remote action queue keeps at most one in-flight
-request and trims stale action slots instead of blindly appending future actions.
+Key options of `evaluate.py`:
 
-The scene contains a Franka Panda, a 5 cm cube and a flat table at z=0. Initial
-cube positions are sampled from x=[0.42,0.48] and y=[-0.22,-0.18] m. The pushing
-target is 20 cm along +y, shown by a marker without collision geometry. Physics
-runs at 60 Hz; joint targets update at 20 Hz. Each task uses the same seeded
-sequence of initial positions. Object pose and velocity are reset between episodes.
-The reference controllers use ground-truth state and Cartesian inverse kinematics.
+| Option | Meaning |
+|---|---|
+| `--policy` | `scripted`, `remote`, `local` (needs `--model`, training env) or `module:Class` |
+| `--mode sync` | Physics waits for every chunk; measures policy quality without latency effects |
+| `--mode continuous` | Inference runs in the background while physics advances at 20 Hz wall-clock pace (`--no-realtime` disables pacing) |
+| `--execute-steps`, `--prefetch` | Actions used per chunk; request the next chunk when the queue is at or below `prefetch` |
+| `--seeds 42 43 ...` | Run `--episodes` per seed; initial cube poses depend only on task, seed and episode |
+| `--headless` | No GUI (needed over SSH without a display) |
+
+In continuous mode, slots of a returned chunk whose tick has already passed are skipped
+and the rest replace the queue, so slot *i* always executes at tick `obs_id + i`.
+If the queue runs dry, the last commanded target is held.
+
+## Server vs Jetson comparison
+
+```bash
+SEEDS="42 43 44 45 46"
+COMMON="--task both --policy remote --episodes 20 --seeds $SEEDS --execute-steps 10 --prefetch 5 --timeout 30 --headless"
+
+# Server inference (policy server on this host, port 18080)
+python simulator/evaluate.py $COMMON --server http://127.0.0.1:18080 --mode sync       --output outputs/cmp/server_sync
+python simulator/evaluate.py $COMMON --server http://127.0.0.1:18080 --mode continuous --output outputs/cmp/server_cont
+
+# Jetson inference (record power on the Jetson with tegrastats meanwhile)
+python simulator/evaluate.py $COMMON --server http://JETSON_IP:8080 --mode sync       --output outputs/cmp/jetson_sync
+python simulator/evaluate.py $COMMON --server http://JETSON_IP:8080 --mode continuous --output outputs/cmp/jetson_cont
+
+# Offline metrics and paired statistics (no re-simulation; first run is the reference)
+python simulator/posthoc_metrics.py --run server=outputs/cmp/server_cont \
+  --run jetson=outputs/cmp/jetson_cont --output outputs/cmp/posthoc_cont
+```
+
+`posthoc_metrics.py` pairs episodes by (task, seed, episode), checks that initial
+states match, and writes `episodes_posthoc.csv`, `summary.csv` (per-seed mean ± SD),
+`comparison.csv` (paired difference, bootstrap 95% CI, exact McNemar or permutation
+p-value) and `summary_table.tex`.
 
 ## Metrics
 
 | Metric | Definition |
-| --- | --- |
-| Task Success Rate (%) | Successful episodes divided by completed episodes, multiplied by 100 |
-| Collision Rate (%) | Episodes with at least one unintended contact above the threshold, divided by completed episodes, multiplied by 100 |
-| Task Completion Time (s) | Mean simulation time to confirmed success over successful episodes; null when none succeed |
+|---|---|
+| Success rate | Successful / completed episodes |
+| Collision rate | Episodes with an unintended contact ≥ 1 N |
+| Completion time | Simulation time to confirmed success (incl. the 1 s hold), successful episodes only |
+| AJJ | Mean norm of the third difference of arm joints 1–7 (rad/s³), lower is smoother |
+| Task progress *(posthoc)* | Grasping: max rise / 10 cm; pushing: (d₀ − d) / (d₀ − 3 cm); clipped to [0, 1], 1 = success threshold |
+| Cube peak speed *(posthoc)* | Max cube linear speed in the episode |
+| Tip-over rate *(posthoc, pushing)* | Cube centre rises ≥ 1.0 cm (5 cm cube on an edge: 1.04 cm) |
+| Inference / RTT | Server model time and HTTP round trip; RTT − inference = transport and encoding overhead |
+| Dropped slots / starvation | Expired chunk actions skipped / steps with an empty queue |
 
-**Grasping:** lift the cube centre at least 10 cm above its settled initial height,
-with positive-impulse contact from both fingers continuously for one second.
-Contact loss or a drop restarts the hold.
+**Grasping success:** cube centre ≥ 10 cm above its settled height with both fingers
+in contact continuously for 1 s. **Pushing success:** cube within 3 cm of the target
+(20 cm along +y) in XY, within 1.5 cm of its surface height and below 3 cm/s for 1 s.
+Episodes time out after 30 s; a cube below z = −2 cm fails immediately.
 
-**Pushing:** keep the cube centre within 3 cm of the target in XY, within 1.5 cm
-of its initial surface height, and below 3 cm/s linear speed for one second.
-Lifting above the height tolerance disqualifies the episode from pushing success.
+**Collisions:** PhysX contact reports at every physics step; force = summed impulse / dt.
+Finger–cube, cube–table and robot-base–table contacts are expected and excluded, so a
+finger knocking the cube is *not* a collision. Other robot–environment, non-finger
+robot–cube and cube–floor contacts count. Thresholds live in `evaluation/metrics.py:TaskConfig`.
 
-An object below z=-2 cm fails immediately. Other unsuccessful episodes time out
-after 30 simulation seconds by default. Timeouts and falls remain in the rate
-denominators. Success and collision are recorded independently.
-
-PhysX contact reports are evaluated at each physics step. Contact force is the
-sum of contact impulse magnitudes divided by the physics timestep; the default
-threshold is 1 N. Finger/cube contact, cube/table contact and fixed robot-base/table
-support are expected contacts and are excluded. Other robot/environment contacts,
-non-finger robot/cube contacts and cube/floor contacts count as collisions.
-Asset-filtered self contacts are outside the collision metric's scope.
-
-Task thresholds are defined in `evaluation/metrics.py:TaskConfig`. The CLI exposes
-timeout, hold duration and collision-force threshold.
+Scene: 5 cm cube on a table at z = 0, initial x ∈ [0.42, 0.48], y ∈ [−0.22, −0.18] m;
+physics 60 Hz, actions 20 Hz; camera 256×256 RGB; actions are 9 absolute joint targets
+(`panda_joint1–7` in rad, two fingers in m).
 
 ## Output files
 
-- `run_config.json`: task, controller, seed and metric settings.
-- `episodes.jsonl`: per-episode metrics, initial state, target and timing.
-- `summary.json` and `summary.csv`: aggregate metrics for each task.
-- `<task>_<episode>_trace.jsonl`: 60 Hz object state, robot state and contact data.
-- `status.json`: completion status; aborted runs are marked as partial.
+- `run_config.json`: arguments, metric settings, server health/contract.
+- `episodes.jsonl`: per-episode metrics, initial state, target, latency and queue stats.
+- `summary.json/.csv`, `summary_by_seed.json/.csv`: aggregates per task (and per seed).
+- `<task>[_seed<seed>]_<episode>_trace.jsonl`: 60 Hz cube pose/velocity, joint state,
+  hand position, finger contacts and unintended-contact events.
+- `status.json`: `completed` or `partial`.
 
-Completion time includes the required hold and uses the simulation clock. Wall
-time is recorded separately. Summaries include successful completion-time
-standard deviation, episode duration and clipped-action counts.
-
-## Remote policy interface
-
-The HTTP client uses the project's `/health` and `/infer` endpoints. Observations
-contain a 256x256 RGB image, nine measured joint positions and a task instruction.
-Actions are nine absolute joint targets in canonical Panda joint order:
-`panda_joint1` through `panda_joint7`, followed by both finger joints.
-Arm units are radians; finger units are metres.
+## Tests and layout
 
 ```bash
-# On the inference host, using a task-appropriate trained checkpoint:
-python jetson_orin_nx/policy_server.py --model outputs/nx_multitask_v2 --host 0.0.0.0 --port 8080 --device cuda
-
-# On the simulation host:
-python simulator/evaluate.py --task both --policy remote --server http://JETSON_IP:8080 \
-  --mode sync --episodes 5 --output outputs/remote_grasping
+python -m unittest discover -s simulator/tests
+python -m unittest discover -s tests
 ```
 
-The server requires the model dependencies in `requirements-training.txt` and a
-CUDA PyTorch build compatible with its host. Jetson requires an ARM64 build
-compatible with the installed JetPack. Keep training dependencies separate from
-the Isaac Sim environment.
-
-The current project uses a multi-task scene contract with supported tasks
-`grasping` and `pushing`. The task is passed through the HTTP request as a
-natural-language instruction, and the action chunk is trimmed by simulation time
-when the queue is behind. In continuous mode, stale slots are skipped and the
-next valid chunk replaces the expired queued actions; the queue does not grow
-without bound while inference is delayed.
-
-For local execution, `--policy local` loads a checkpoint in-process through the
-same `Engine` used by the HTTP server. This is useful for smoke tests or when the
-inference host is the same machine as the simulator. It must be run in the
-training environment, not the Isaac Sim environment. The Isaac Sim Python has a
-separate environment and is not compatible with the LeRobot 0.4.3 stack used by
-this model. Remote evaluation does not require the physics thread to wait for each
-request in continuous mode. Mean HTTP round-trip time and server-reported
-inference time are logged separately from simulation completion time.
-`--allow-mock` enables hold-joint transport tests.
-
-Custom policies can be supplied with `--policy package.module:PolicyClass`.
-The class needs a no-argument constructor, `reset(scene, task, initial, target)`,
-and `act(elapsed_simulation_seconds)` returning nine finite joint targets.
-`scene.observation()` provides state and RGB. Policy errors abort the run and
-preserve completed episodes as partial results.
-
-## Validation
-
-| Task | Episodes | Success rate | Collision rate | Mean completion time |
-| --- | ---: | ---: | ---: | ---: |
-| Grasping | 100 | 100% | 0% | 8.5833 s |
-| Pushing | 100 | 100% | 0% | 9.9252 s |
-
-These results use the scripted reference controller, seed 42 and the scene above.
-See [VALIDATION.md](VALIDATION.md) for run settings, episode records and previews.
-
-```bash
-python -m unittest discover -s simulator/tests -v
-python -m unittest discover -s tests -v
-python simulator/validate_runtime.py
-```
-
-The runtime probe checks RGB capture, unchanged physics time during capture, and
-a deliberate robot/table contact. It runs separately from benchmark episodes.
-
-## Source layout
-
-- `evaluate.py`: evaluation runner and result export.
-- `evaluation/`: controllers, policy client, metrics and contact monitoring.
-- `franka/scene.py`: shared scene, camera and joint adapter.
-- `validate_runtime.py`: camera/contact integration probe.
+- `evaluate.py`: evaluation runner; `posthoc_metrics.py`: offline metrics and comparison.
+- `evaluation/`: controllers, policy clients, metrics, contact monitor.
+- `franka/`: shared scene, demo collection, replay, standalone HIL loop.
 - `tests/`: CPU regression tests.
-- `validation/`: measured results and camera previews.
-
-The package also retains the project's demonstration collection, replay, training
-and Jetson utilities. Source references are listed in the package's `SOURCES.md`.

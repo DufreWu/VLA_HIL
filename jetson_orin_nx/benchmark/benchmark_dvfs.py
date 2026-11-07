@@ -170,7 +170,7 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> 
 def build_config_json(model_path: Path, output_dir: Path, args: argparse.Namespace, device: str, thermal: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "model": {
-            "path": str(model_path),
+            "path": str(model_path.relative_to(ROOT)) if model_path.is_relative_to(ROOT) else model_path.name,
             "name": model_path.name,
             "exists": model_path.exists(),
             "device": device,
