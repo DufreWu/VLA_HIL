@@ -298,3 +298,82 @@ class AnalysisTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class GridTests(unittest.TestCase):
+    def _yaml(self, d, grid):
+        path = Path(d) / 'g.yaml'
+        path.write_text(yaml.safe_dump({'configs': [dict(name='default', governor='default'), dict(grid=grid)]}))
+        return path
+
+    def test_grid_expands_from_device_lists(self):
+        from jetson_orin_nx.benchmark.dvfs_control import expand_dvfs_grid
+        with tempfile.TemporaryDirectory() as d:
+            raw = load_dvfs_configs(self._yaml(d, dict(cpu_khz='all', gpu_hz='all')))
+            caps = fake_board(d).capabilities()
+            out = expand_dvfs_grid(raw, caps)
+            self.assertEqual(out[0]['name'], 'default')
+            self.assertEqual(len(out), 1 + 3 * 2)
+            self.assertEqual(out[1], dict(name='cpu115.2_gpu306', cpu_khz=115200, gpu_hz=306000000, grid_point=True))
+            self.assertEqual(out[-1]['name'], 'cpu1984_gpu918')
+            sub = expand_dvfs_grid(raw, caps, names=['default', 'cpu422.4_gpu918'])
+            self.assertEqual([c['name'] for c in sub], ['default', 'cpu422.4_gpu918'])
+            with self.assertRaises(ValueError):
+                expand_dvfs_grid(raw, None)            # "all" needs the device list
+
+    def test_grid_board_and_explicit_lists(self):
+        from jetson_orin_nx.benchmark.dvfs_control import expand_dvfs_grid
+        with tempfile.TemporaryDirectory() as d:
+            out = expand_dvfs_grid(load_dvfs_configs(self._yaml(d, dict(cpu_khz='board', gpu_hz=[306000000]))))
+            board = yaml.safe_load((ROOT / 'jetson_orin_nx/benchmark/jetson_orin_nx.yaml').read_text())['jetson_orin_nx_16g']
+            self.assertEqual(len(out) - 1, len(board['cpu_freqs']))
+            with self.assertRaises(ValueError):
+                load_dvfs_configs(self._yaml(d, dict(cpu_khz='some', gpu_hz='all')))
+
+    def test_shipped_grid_file(self):
+        raw = load_dvfs_configs(JROOT / 'jetson_orin_nx/benchmark/closed_loop_dvfs_grid.yaml')
+        self.assertEqual(raw[1]['grid'], dict(cpu_khz='all', gpu_hz='all'))
+
+    def test_heatmap_figures_for_grid(self):
+        from simulator.analyze_energy import analyze
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            names = [f'cpu{c:g}_gpu{g:g}' for c in (115.2, 729.6, 1984) for g in (306, 612, 918)]
+            synthetic_experiment(d)
+            # Re-label the synthetic run as a 3x3 grid plus the default governor.
+            import csv as _csv
+            rows = list(_csv.DictReader(open(d / 'episodes.csv')))
+            base = [r for r in rows if r['configuration'] == 'default']
+            out_rows = []
+            for n in ['default'] + names:
+                for r in base:
+                    out_rows.append(dict(r, configuration=n, episode_uid=r['episode_uid'].replace('default', n)))
+            with open(d / 'episodes.csv', 'w', newline='') as f:
+                w = _csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(out_rows)
+            cfg = json.loads((d / 'experiment_config.json').read_text())
+            cfg['dvfs_configs'] = [dict(name='default', cpu_khz=None)] + [
+                dict(name=n, cpu_khz=int(float(n[3:n.index('_')]) * 1000), gpu_hz=int(n.split('gpu')[1]) * 10**6)
+                for n in names]
+            (d / 'experiment_config.json').write_text(json.dumps(cfg))
+            (d / 'power_samples.csv.gz').unlink(); (d / 'joint_samples.csv.gz').unlink()
+            report = analyze(d)
+            self.assertEqual(report['figures']['layout'], 'CPU x GPU heatmap')
+            self.assertEqual(report['figures']['grid'], dict(cpu_mhz=[115.2, 729.6, 1984.0], gpu_mhz=[306.0, 612.0, 918.0]))
+            self.assertTrue((d / 'figures/fig4_success_rate.png').exists())
+
+
+class ThreeByThreeTests(unittest.TestCase):
+    def test_min_mid_max_grid(self):
+        from jetson_orin_nx.benchmark.dvfs_control import expand_dvfs_grid, pick_frequency
+        cpus = [115200, 422400, 729600, 1036800, 1344000, 1651200, 1984000]
+        gpus = [306000000, 408000000, 510000000, 612000000, 714000000, 816000000, 918000000]
+        self.assertEqual(pick_frequency(gpus, 'mid'), 612000000)
+        self.assertEqual(pick_frequency(cpus, 'mid'), 1036800)          # closest to 1049.6 MHz
+        raw = load_dvfs_configs(JROOT / 'jetson_orin_nx/benchmark/closed_loop_dvfs_3x3.yaml')
+        out = expand_dvfs_grid(raw, dict(cpu_khz_available=cpus, gpu_hz_available=gpus))
+        self.assertEqual(len(out), 10)
+        self.assertEqual(out[0]['name'], 'default')
+        self.assertEqual({(c['cpu_khz'], c['gpu_hz']) for c in out[1:]},
+                         {(c, g) for c in (115200, 1036800, 1984000) for g in (306000000, 612000000, 918000000)})
+        with self.assertRaises(ValueError):
+            expand_dvfs_grid(raw, None)

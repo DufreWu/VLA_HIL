@@ -1,0 +1,14 @@
+# 3 x 3 CPU x GPU grid for the closed-loop DVFS energy evaluation (9 fixed configs).
+#
+# min / max: lowest / highest frequency the device lists under the active nvpmodel mode;
+# mid: the listed frequency closest to (min + max) / 2. Resolved from /dvfs/capabilities
+# before Isaac Sim starts; the resolved values are printed and stored in
+# experiment_config.json (configs are named cpu<MHz>_gpu<MHz>).
+# `default` (stock governors) is the reference for paired tests and not part of the grid;
+# remove it to run the 9 grid configs only.
+configs:
+  - name: default
+    governor: default
+  - grid:
+      cpu_khz: [min, mid, max]
+      gpu_hz: [min, mid, max]

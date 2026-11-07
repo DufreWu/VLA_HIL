@@ -46,6 +46,15 @@ def load_dvfs_configs(path=CLOSED_LOOP_CONFIG, names=None) -> list[dict[str, Any
         raise ValueError(f'{path}: expected a non-empty "configs" list')
     out, seen = [], set()
     for item in configs:
+        if 'grid' in item:
+            grid = item['grid'] or {}
+            for key in ('cpu_khz', 'gpu_hz'):
+                v = grid.get(key)
+                if not (v in ('all', 'board') or (isinstance(v, list) and v)):
+                    raise ValueError(f'grid.{key} must be "all" (device list), "board" (jetson_orin_nx.yaml) '
+                                     'or a non-empty list')
+            out.append(dict(grid=dict(cpu_khz=grid['cpu_khz'], gpu_hz=grid['gpu_hz']), name='__grid__'))
+            continue
         name = str(item['name'])
         if name in seen:
             raise ValueError(f'Duplicate DVFS config name {name!r}')
@@ -62,6 +71,72 @@ def load_dvfs_configs(path=CLOSED_LOOP_CONFIG, names=None) -> list[dict[str, Any
             continue
         cpu, gpu = _freq_value(name, item['cpu_khz']), _freq_value(name, item['gpu_hz'])
         out.append(dict(item, name=name, cpu_khz=cpu, gpu_hz=gpu))
+    if any('grid' in c for c in out):
+        if names:
+            raise ValueError('--dvfs-names is applied after grid expansion (see expand_dvfs_grid)')
+        return out
+    return select_dvfs_configs(out, names)
+
+
+def pick_frequency(available, which: str) -> int:
+    """'min'/'max' of the device list, or 'mid': the listed value closest to (min + max) / 2."""
+    listed = sorted(int(x) for x in available)
+    if which == 'min':
+        return listed[0]
+    if which == 'max':
+        return listed[-1]
+    if which == 'mid':
+        centre = (listed[0] + listed[-1]) / 2
+        return min(listed, key=lambda f: (abs(f - centre), f))
+    raise ValueError(f'Unknown frequency selector {which!r}')
+
+
+def grid_name(cpu_khz: int, gpu_hz: int) -> str:
+    return f'cpu{cpu_khz / 1000:g}_gpu{gpu_hz / 1e6:g}'
+
+
+def expand_dvfs_grid(configs: list[dict[str, Any]], caps: dict[str, Any] | None = None,
+                     board_config=BOARD_CONFIG, names=None) -> list[dict[str, Any]]:
+    """Replace ``grid`` entries by one fixed config per (CPU, GPU) pair, CPU-major ascending.
+
+    ``all`` takes the frequencies the device lists (``caps`` from /dvfs/capabilities), ``board``
+    the cpu_freqs/gpu_freqs of jetson_orin_nx.yaml; explicit lists are used as given (the server
+    still rejects values the device does not list).
+    """
+    out = []
+    board = None
+    for c in configs:
+        if 'grid' not in c:
+            out.append(c)
+            continue
+        lists = []
+        for key, cap_key, board_key in (('cpu_khz', 'cpu_khz_available', 'cpu_freqs'),
+                                        ('gpu_hz', 'gpu_hz_available', 'gpu_freqs')):
+            v = c['grid'][key]
+            if isinstance(v, list) and any(x in ('min', 'mid', 'max') for x in v):
+                if not caps or not caps.get(cap_key):
+                    raise ValueError(f'grid.{key}: min/mid/max need the device frequency list (/dvfs/capabilities)')
+                v = [pick_frequency(caps[cap_key], x) if isinstance(x, str) else x for x in v]
+            elif v == 'all':
+                if not caps or not caps.get(cap_key):
+                    raise ValueError(f'grid.{key}: all needs the device frequency list (/dvfs/capabilities)')
+                v = caps[cap_key]
+            elif v == 'board':
+                board = board or yaml.safe_load(Path(board_config).read_text())['jetson_orin_nx_16g']
+                v = board[board_key]
+            lists.append(sorted({int(x) for x in v}))
+        for cpu in lists[0]:
+            for gpu in lists[1]:
+                out.append(dict(name=grid_name(cpu, gpu), cpu_khz=cpu, gpu_hz=gpu, grid_point=True))
+    seen = set()
+    for c in out:
+        if c['name'] in seen:
+            raise ValueError(f"Duplicate DVFS config name {c['name']!r} after grid expansion")
+        seen.add(c['name'])
+    return select_dvfs_configs(out, names)
+
+
+def select_dvfs_configs(out, names):
     if names:
         by_name = {c['name']: c for c in out}
         missing = [n for n in names if n not in by_name]

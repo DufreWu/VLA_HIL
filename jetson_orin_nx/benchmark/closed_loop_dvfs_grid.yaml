@@ -1,0 +1,15 @@
+# Full CPU x GPU frequency grid for the closed-loop DVFS energy evaluation.
+#
+# `grid` expands to one fixed config per (CPU, GPU) pair, named cpu<MHz>_gpu<MHz>:
+#   all    every frequency the device lists (CPU: scaling_available_frequencies of all cores;
+#          GPU: devfreq available_frequencies) under the active nvpmodel mode
+#   board  cpu_freqs / gpu_freqs of jetson_orin_nx.yaml
+#   [..]   an explicit list (kHz for CPU, Hz for GPU); unsupported values abort the run
+# The expanded list and the number of episodes are printed before Isaac Sim starts.
+# `default` (stock governors) stays first as the reference for paired tests.
+configs:
+  - name: default
+    governor: default
+  - grid:
+      cpu_khz: all
+      gpu_hz: all

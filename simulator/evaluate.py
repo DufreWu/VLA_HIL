@@ -187,8 +187,11 @@ def main():
     from simulator.evaluation import energy as E
     dvfs_configs = [None]
     if args.dvfs_configs is not None:
-        from jetson_orin_nx.benchmark.dvfs_control import load_dvfs_configs
-        dvfs_configs = load_dvfs_configs(args.dvfs_configs, args.dvfs_names)
+        from jetson_orin_nx.benchmark.dvfs_control import load_dvfs_configs, expand_dvfs_grid
+        dvfs_configs = load_dvfs_configs(args.dvfs_configs)
+        has_grid = any('grid' in c for c in dvfs_configs)
+        if not has_grid:
+            dvfs_configs = expand_dvfs_grid(dvfs_configs, names=args.dvfs_names)
     reference = dvfs_configs[0]['name'] if dvfs_configs[0] is not None else None
     device_caps = None
     actuator_model, actuator_status = None, 'not configured (--actuator-model not given)'
@@ -224,6 +227,17 @@ def main():
                                    'resolve; update jetson_orin_nx/ on the Jetson and restart the server.')
             if 'dvfs_capabilities' in features:
                 device_caps, _ = request_json(server+'/dvfs/capabilities')
+            if has_grid:
+                if device_caps is None and any(c['grid'][k] == 'all' for c in dvfs_configs if 'grid' in c
+                                               for k in ('cpu_khz', 'gpu_hz')):
+                    raise RuntimeError('grid "all" needs the device frequency list; update jetson_orin_nx/ on the '
+                                       'Jetson and restart the server.')
+                dvfs_configs = expand_dvfs_grid(dvfs_configs, device_caps, names=args.dvfs_names)
+                reference = dvfs_configs[0]['name']
+                n_cfg = len(dvfs_configs)
+                print(f'[DVFS] grid expanded to {n_cfg} configs -> {n_cfg * len(args.seeds) * args.episodes * 2} '
+                      'episodes for --task both', flush=True)
+            if device_caps is not None:
                 for c in dvfs_configs:  # Resolve min/max on the device; unsupported values fail here.
                     if c['cpu_khz'] is not None:
                         resolved, _ = request_json(server+'/dvfs', dict(resolve_only=True, cpu_khz=c['cpu_khz'],

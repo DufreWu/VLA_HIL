@@ -379,6 +379,104 @@ def _short(c):
     return c.replace('gpu_', 'G').replace('_cpu_', '/C').replace('max', 'max').replace('_', ' ')
 
 
+SEQ_BLUE = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b']  # one-hue ramp
+
+
+def grid_points(cfg):
+    """{config name: (cpu MHz, gpu MHz)} for fixed-frequency configs (resolved on the device)."""
+    out = {}
+    for c in cfg.get('dvfs_configs') or []:
+        if not c or c.get('cpu_khz') is None:
+            continue
+        cpu, gpu = c.get('resolved_cpu_khz', c['cpu_khz']), c.get('resolved_gpu_hz', c['gpu_hz'])
+        if isinstance(cpu, (int, float)) and isinstance(gpu, (int, float)):
+            out[c['name']] = (cpu / 1e3, gpu / 1e6)
+    return out
+
+
+def heatmap_figures(exp, eps, reqs, per_task, per_config, points, model_label):
+    """Figures 1-6 as CPU x GPU heatmaps (used when the configs form a frequency grid)."""
+    plt = _style()
+    from matplotlib.colors import LinearSegmentedColormap
+    cmap = LinearSegmentedColormap.from_list('seq_blue', SEQ_BLUE)
+    cmap.set_bad('#f0efec')
+    out = exp / 'figures'
+    cpus = sorted({c for c, _ in points.values()})
+    gpus = sorted({g for _, g in points.values()})
+    others = [c for c in dict.fromkeys(r['configuration'] for r in eps) if c not in points]
+    tasks = list(dict.fromkeys(r['task'] for r in eps))
+    made, skipped = [], {}
+
+    def lookup(rows, cfg, task, key):
+        for s_ in rows:
+            if s_['configuration'] == cfg and s_['task'] == task:
+                return s_.get(key, math.nan)
+        return math.nan
+
+    def matrix(fn):
+        m = np.full((len(cpus), len(gpus)), np.nan)
+        for name, (c, g) in points.items():
+            m[cpus.index(c), gpus.index(g)] = fn(name)
+        return m
+
+    def draw(name, panels):
+        fig, axes = plt.subplots(1, len(panels), figsize=(2.45 * len(panels), 0.5 + 0.17 * len(cpus) + 0.9),
+                                 squeeze=False)
+        for ax, (label, fn, fmt, *rng) in zip(axes[0], panels):
+            m = matrix(fn)
+            finite_m = m[np.isfinite(m)]
+            lo, hi = rng[0] if rng else ((finite_m.min(), finite_m.max()) if finite_m.size else (0, 1))
+            im = ax.imshow(np.ma.masked_invalid(m), cmap=cmap, aspect='auto', origin='lower', vmin=lo, vmax=hi)
+            ax.grid(False)
+            ax.set_xticks(range(len(gpus)), [f'{g:g}' for g in gpus], rotation=90)
+            ax.set_yticks(range(len(cpus)), [f'{c:g}' for c in cpus])
+            ax.set_xlabel('GPU frequency (MHz)')
+            if ax is axes[0][0]:
+                ax.set_ylabel('CPU frequency (MHz)')
+            mid = (lo + hi) / 2
+            if len(cpus) * len(gpus) <= 250:
+                for i in range(len(cpus)):
+                    for j in range(len(gpus)):
+                        v = m[i, j]
+                        ax.text(j, i, 'n/a' if not np.isfinite(v) else format(v, fmt), ha='center', va='center',
+                                fontsize=4.5, color=MUTED if not np.isfinite(v) else ('white' if v > mid else INK))
+            cb = fig.colorbar(im, ax=ax, fraction=0.05, pad=0.03)
+            cb.outline.set_visible(False)
+            ref = [f'{o}: {format(fn(o), fmt)}' for o in others if np.isfinite(fn(o))]
+            ax.set_title(label + (f'\n({"; ".join(ref)})' if ref else ''), fontsize=7)
+        _save(fig, out, name); made.append(name.split('_')[0]); plt.close(fig)
+
+    by_cfg_lat = {}
+    for q in reqs:
+        if finite(q['inference_ms']):
+            by_cfg_lat.setdefault(q['configuration'], []).append(q['inference_ms'] / 1000)
+    med = lambda c: float(np.median(by_cfg_lat[c])) if by_cfg_lat.get(c) else math.nan
+    allstat = lambda key: (lambda c: lookup(per_config, c, 'all', key))
+    taskstat = lambda t, key: (lambda c: lookup(per_task, c, t, key))
+    draw('fig1_inference_latency', [('Median inference latency (s)', med, '.2f'),
+                                     ('Mean P95 latency per episode (s)',
+                                      lambda c: allstat('inference_ms_p95_mean')(c) / 1000, '.2f')])
+    draw('fig2_power_inference_energy', [('Computational power (W, measured)', allstat('computational_power_w_mean'), '.1f'),
+                                         ('Energy per inference (J, measured)', allstat('inference_energy_j_mean'), '.2f'),
+                                         ('E_comp per episode (J, measured)', allstat('computational_energy_j_mean'), '.0f')])
+    if np.isfinite(matrix(allstat('actuator_energy_j_mean'))).any():
+        draw('fig3_energy_breakdown', [('E_comp (J, measured)', allstat('computational_energy_j_mean'), '.0f'),
+                                       (f'E_act (J, {model_label})', allstat('actuator_energy_j_mean'), '.0f'),
+                                       ('E_total (J)', allstat('total_energy_j_mean'), '.0f')])
+    else:
+        skipped['fig3'] = 'actuator energy model unavailable (no total-energy chart)'
+    draw('fig4_success_rate', [(f'{t.capitalize()} success rate (%)', taskstat(t, 'success_rate_pct'), '.0f', (0, 100))
+                               for t in tasks])
+    key = ('total_energy_per_success_j' if 'fig3' not in skipped else 'computational_energy_per_success_j')
+    lab = 'Total' if key.startswith('total') else 'Computational'
+    draw('fig5_energy_per_success', [(f'{t.capitalize()}: {lab} energy per success (J)', taskstat(t, key), '.0f')
+                                     for t in tasks])
+    draw('fig6_action_timing', [('Action delay (s)', lambda c: allstat('action_delay_ms_mean')(c) / 1000, '.2f'),
+                                ('Holding time (s)', allstat('holding_time_s_mean'), '.1f'),
+                                ('Buffer underrun rate (%)', lambda c: allstat('buffer_underrun_rate_mean')(c) * 100, '.0f')])
+    return dict(made=made, skipped=skipped, layout='CPU x GPU heatmap', grid=dict(cpu_mhz=cpus, gpu_mhz=gpus))
+
+
 def figures(exp, eps, reqs, per_task, per_config, configs, model_label):
     plt = _style()
     out = exp / 'figures'
@@ -524,8 +622,12 @@ def analyze(exp, reference=None, plots=True):
     model = (cfg.get('measurement') or {}).get('actuator_model', 'unavailable')
     report['actuator_model'] = model
     if plots:
-        report['figures'] = figures(exp, eps, reqs, per_task, per_config, configs,
-                                    'model-based estimate' if 'estimate' in str(model) else 'model')
+        label = 'model-based estimate' if 'estimate' in str(model) else 'model'
+        points = {k: v for k, v in grid_points(cfg).items() if k in configs}
+        if len(points) > 8 and len({c for c, _ in points.values()}) > 1 and len({g for _, g in points.values()}) > 1:
+            report['figures'] = heatmap_figures(exp, eps, reqs, per_task, per_config, points, label)
+        else:
+            report['figures'] = figures(exp, eps, reqs, per_task, per_config, configs, label)
     (exp / 'validation_report.json').write_text(json.dumps(report, indent=2, default=str) + '\n')
     failed = [c['check'] for c in report['checks'] if not c['passed']]
     print(f"[analysis] {len(eps)} episodes, {len(configs)} configs; validation "

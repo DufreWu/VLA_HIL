@@ -48,6 +48,25 @@ python simulator/evaluate.py --policy remote --server http://JETSON_IP:8080 --mo
 python simulator/analyze_energy.py outputs/dvfs_energy_evaluation/<ID> --strict
 ```
 
+**Full CPU × GPU grid.** `jetson_orin_nx/benchmark/closed_loop_dvfs_grid.yaml` expands to
+`default` plus one fixed config per (CPU, GPU) pair, named `cpu<MHz>_gpu<MHz>`. `all`
+takes the device lists, `board` takes `jetson_orin_nx.yaml`, or an explicit list can be
+given. The expanded count and episode total are printed before Isaac Sim starts.
+`--dvfs-names` selects a subset after expansion, e.g. to resume or split a grid run.
+
+| Grid | Configs | Episodes at 5 seeds × 10 | Estimated time (≈ 40 s / episode incl. switch + warm-up) |
+|---|---|---|---|
+| Device lists (typically 26 CPU × 7 GPU) | 183 | 18 300 | ≈ 8.5 days |
+| `board` lists (12 × 7) | 85 | 8 500 | ≈ 4 days |
+| Device lists, `--seeds 41 --episodes 10` | 183 | 3 660 | ≈ 1.7 days |
+| `closed_loop_dvfs_3x3.yaml`: CPU, GPU ∈ {min, mid, max} + `default` | 10 | 1 000 | ≈ 11 h |
+
+Grid lists may contain `min`, `mid` (listed value closest to (min + max)/2) and `max`,
+resolved against the device's own frequency lists.
+
+With more than 8 grid configs, Figures 1–6 are drawn as CPU × GPU heatmaps. The default
+governor's value is given in each panel title, and success rates use a fixed 0–100 % scale.
+
 `--dvfs-configs` refuses `--mode sync` and `--no-realtime`. Three consecutive inference or
 communication failures abort the run, so the episodes after a server crash are not
 recorded as task failures. Raw logs are append-only and flushed after every episode.
