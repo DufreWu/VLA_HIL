@@ -1,0 +1,136 @@
+configuration,reference,task,metric,n_pairs,diff_mean,ci95_low,ci95_high,p_value,test,note,p_holm
+cpu115.2_gpu306,default,all,computational_energy_j,30,12.190204497897687,-11.896751966935138,36.36004793148084,0.34996500349965,paired sign-flip permutation,config minus reference,1.0
+cpu115.2_gpu612,default,all,computational_energy_j,30,19.6158705645026,-4.6473286560118,43.83333155982623,0.1398860113988601,paired sign-flip permutation,config minus reference,0.6994300569943004
+cpu115.2_gpu918,default,all,computational_energy_j,30,37.77501174191595,13.591016683385703,61.99850693872669,0.008999100089991,paired sign-flip permutation,config minus reference,0.080991900809919
+cpu1036.8_gpu306,default,all,computational_energy_j,30,26.91196062698044,-3.7782322745576713,56.91663372778171,0.1026897310268973,paired sign-flip permutation,config minus reference,0.6161383861613838
+cpu1036.8_gpu612,default,all,computational_energy_j,30,23.509854571371815,-8.417623961988662,54.66498868086368,0.1604839516048395,paired sign-flip permutation,config minus reference,0.6994300569943004
+cpu1036.8_gpu918,default,all,computational_energy_j,30,35.09286249297899,-1.0051459707136357,71.42454724163841,0.0672932706729327,paired sign-flip permutation,config minus reference,0.4710528947105289
+cpu1984_gpu306,default,all,computational_energy_j,30,11.666139978728802,-13.00467198792018,36.16730024373779,0.4345565443455654,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu612,default,all,computational_energy_j,30,8.997617880020728,-13.050547260571,29.945537696558823,0.418958104189581,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu918,default,all,computational_energy_j,30,31.56366953231116,7.277735337017236,56.567344334510885,0.0161983801619838,paired sign-flip permutation,config minus reference,0.1295870412958704
+cpu115.2_gpu306,default,grasping,computational_energy_j,15,46.74150519064235,9.790540218543786,75.82442242028725,0.0233976602339766,paired sign-flip permutation,config minus reference,0.0935906409359064
+cpu115.2_gpu612,default,grasping,computational_energy_j,15,54.254293374097024,17.558163239189778,83.52173128388424,0.0107989201079892,paired sign-flip permutation,config minus reference,0.053994600539945994
+cpu115.2_gpu918,default,grasping,computational_energy_j,15,72.32637825300235,34.98022798846826,101.69976717601558,0.0017998200179982,paired sign-flip permutation,config minus reference,0.0111988801119888
+cpu1036.8_gpu306,default,grasping,computational_energy_j,15,71.81290433888154,34.86420339270403,100.81297778513148,0.0013998600139986,paired sign-flip permutation,config minus reference,0.0111988801119888
+cpu1036.8_gpu612,default,grasping,computational_energy_j,15,79.5705066805599,49.27449351945019,108.937603828228,0.0014998500149985,paired sign-flip permutation,config minus reference,0.0111988801119888
+cpu1036.8_gpu918,default,grasping,computational_energy_j,15,103.48627291532848,72.27602109113859,132.67180870256655,0.0002999700029997,paired sign-flip permutation,config minus reference,0.0026997300269973
+cpu1984_gpu306,default,grasping,computational_energy_j,15,-4.126670449218281,-35.500597578227584,26.99268825589215,0.9994000599940006,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu612,default,grasping,computational_energy_j,15,0.5961250694070088,-31.1624051865196,32.406545859608734,0.9991000899910008,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu918,default,grasping,computational_energy_j,15,36.83760377198109,-11.990308508319876,87.58718658641381,0.2004799520047995,paired sign-flip permutation,config minus reference,0.6014398560143985
+cpu115.2_gpu306,default,pushing,computational_energy_j,15,-22.361096194846983,-49.649613209277895,5.114265771359125,0.1458854114588541,paired sign-flip permutation,config minus reference,1.0
+cpu115.2_gpu612,default,pushing,computational_energy_j,15,-15.022552245091822,-42.30433327342398,12.63491822622248,0.3257674232576742,paired sign-flip permutation,config minus reference,1.0
+cpu115.2_gpu918,default,pushing,computational_energy_j,15,3.223645230829545,-23.99352758742276,30.76540502924837,0.7702229777022298,paired sign-flip permutation,config minus reference,1.0
+cpu1036.8_gpu306,default,pushing,computational_energy_j,15,-17.98898308492066,-58.555489566336085,23.12463679218996,0.4384561543845615,paired sign-flip permutation,config minus reference,1.0
+cpu1036.8_gpu612,default,pushing,computational_energy_j,15,-32.55079753781626,-70.310776330539,7.696521396022925,0.1438856114388561,paired sign-flip permutation,config minus reference,1.0
+cpu1036.8_gpu918,default,pushing,computational_energy_j,15,-33.30054792937051,-76.27518736062294,10.174930941091752,0.2462753724627537,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu306,default,pushing,computational_energy_j,15,27.45895040667589,-9.54453188053897,63.98711443467268,0.1294870512948705,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu612,default,pushing,computational_energy_j,15,17.399110690634448,-9.978966085812782,45.20357484448308,0.310968903109689,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu918,default,pushing,computational_energy_j,15,26.2897352926412,21.316026580169936,30.69605125349149,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0017998200179982
+cpu115.2_gpu306,default,all,inference_energy_j,30,54.18115360495685,53.8956737886758,54.46879203295242,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,all,inference_energy_j,30,57.46384706841607,57.02355520235805,57.92251025148287,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu918,default,all,inference_energy_j,30,64.28435866622627,63.88241651569769,64.69892333076903,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu306,default,all,inference_energy_j,30,1.920452871509572,1.843573754459882,1.9918329097222087,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu612,default,all,inference_energy_j,30,1.7672407214400168,1.69425973636912,1.8346905282391863,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu918,default,all,inference_energy_j,30,2.322255756811724,2.2486415888178053,2.3902000018617007,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu306,default,all,inference_energy_j,30,-0.3605901574663908,-0.4296144084643403,-0.2954441551966539,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu612,default,all,inference_energy_j,30,-0.5974061842448969,-0.6689437959602571,-0.533668638776678,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu918,default,all,inference_energy_j,30,-0.4767396592245033,-0.5519250388325027,-0.4058111557784427,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu306,default,grasping,inference_energy_j,15,54.19464487187381,53.72971054634888,54.64646457462759,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,grasping,inference_energy_j,15,57.500930034434056,56.82048665153221,58.156686718462026,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu918,default,grasping,inference_energy_j,15,64.12867405393116,63.58398779728431,64.65677154594631,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu306,default,grasping,inference_energy_j,15,1.8690018882478947,1.7474613119169626,1.9821441538609503,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu612,default,grasping,inference_energy_j,15,1.727411282175403,1.6121756902316924,1.830865683634068,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu918,default,grasping,inference_energy_j,15,2.279684426358898,2.1556349004296687,2.3916573950948425,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu306,default,grasping,inference_energy_j,15,-0.3822107118247529,-0.4960568796016428,-0.2800314468145899,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu612,default,grasping,inference_energy_j,15,-0.6260843717565973,-0.7389452572187034,-0.5249505944077592,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu918,default,grasping,inference_energy_j,15,-0.5243345185350264,-0.6380993546709586,-0.4200190311388252,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu306,default,pushing,inference_energy_j,15,54.16766233803989,53.80709711892065,54.52138078160434,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,pushing,inference_energy_j,15,57.42676410239812,56.8570880869221,58.05269955015138,0.0001999800019998,paired sign-flip permutation,config minus reference,0.000999900009999
+cpu115.2_gpu918,default,pushing,inference_energy_j,15,64.44004327852139,63.85608925492657,65.07611045956502,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu306,default,pushing,inference_energy_j,15,1.9719038547712493,1.8886150965367603,2.0500058655791045,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu612,default,pushing,inference_energy_j,15,1.8070701607046304,1.7219292850852017,1.885336552393982,0.0002999700029997,paired sign-flip permutation,config minus reference,0.000999900009999
+cpu1036.8_gpu918,default,pushing,inference_energy_j,15,2.364827087264551,2.2936827390581405,2.428073828422199,0.0001999800019998,paired sign-flip permutation,config minus reference,0.000999900009999
+cpu1984_gpu306,default,pushing,inference_energy_j,15,-0.3389696031080287,-0.4165492544568813,-0.2658412938259861,0.0001999800019998,paired sign-flip permutation,config minus reference,0.000999900009999
+cpu1984_gpu612,default,pushing,inference_energy_j,15,-0.5687279967331965,-0.6484602088281751,-0.490226208095039,0.0002999700029997,paired sign-flip permutation,config minus reference,0.000999900009999
+cpu1984_gpu918,default,pushing,inference_energy_j,15,-0.4291447999139802,-0.520527224653569,-0.3429463759293836,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu306,default,all,inference_ms_mean,30,10813.669330188712,10755.48697927201,10870.990981837358,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,all,inference_ms_mean,30,10877.438996803216,10793.95249247727,10962.444900580742,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu918,default,all,inference_ms_mean,30,10814.546685890107,10746.339596946067,10883.557981432916,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu306,default,all,inference_ms_mean,30,511.37346603263626,499.6372272417545,522.5278818455159,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu612,default,all,inference_ms_mean,30,422.6317457781525,410.8736383157516,433.43143955693847,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu918,default,all,inference_ms_mean,30,337.7700006065923,326.17547738679093,348.61548677750994,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu306,default,all,inference_ms_mean,30,-108.2798878984137,-119.20721249819977,-98.04941914623996,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu612,default,all,inference_ms_mean,30,-181.77920360223052,-193.1469598803004,-171.50405456159572,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu918,default,all,inference_ms_mean,30,-203.34861631696992,-214.88156083072576,-192.7317723557821,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu306,default,grasping,inference_ms_mean,15,10831.00394727275,10743.706103497345,10916.58826401869,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,grasping,inference_ms_mean,15,10892.492803878213,10772.554766680056,11016.27574800292,0.0002999700029997,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu918,default,grasping,inference_ms_mean,15,10797.111800430712,10709.262011919694,10885.25241356821,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu306,default,grasping,inference_ms_mean,15,502.5931038016172,484.2116156919984,519.5759441427779,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu612,default,grasping,inference_ms_mean,15,415.43510794259714,396.8946950453216,432.0707256435685,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu918,default,grasping,inference_ms_mean,15,330.3749708508083,311.10692205957355,347.780666202669,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu306,default,grasping,inference_ms_mean,15,-113.39512071464856,-131.16384381720533,-97.2251647682112,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu612,default,grasping,inference_ms_mean,15,-187.6973846403652,-205.5650267428989,-171.4315333826813,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu918,default,grasping,inference_ms_mean,15,-210.7961938227464,-228.9787624852598,-194.13487306274084,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu306,default,pushing,inference_ms_mean,15,10796.334713104674,10722.231635197088,10869.088902305011,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,pushing,inference_ms_mean,15,10862.38518972822,10753.87871404835,10980.271961602486,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu918,default,pushing,inference_ms_mean,15,10831.9815713495,10734.70176257223,10937.203038454549,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu306,default,pushing,inference_ms_mean,15,520.1538282636553,506.9283128013168,532.859306830425,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu612,default,pushing,inference_ms_mean,15,429.82838361370784,416.6349177203258,442.3684954580789,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu918,default,pushing,inference_ms_mean,15,345.1650303623762,333.00624814931564,356.8149173616183,0.0002999700029997,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu306,default,pushing,inference_ms_mean,15,-103.16465508217884,-115.8099890470238,-91.09759028942374,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu612,default,pushing,inference_ms_mean,15,-175.86102256409586,-188.11419451270237,-164.2659993244704,0.0001999800019998,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1984_gpu918,default,pushing,inference_ms_mean,15,-195.9010388111934,-209.61148684927176,-183.5866119563646,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu306,default,all,mechanical_energy_j,30,-27.19112833112325,-32.24926296321677,-22.82326030776882,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,all,mechanical_energy_j,30,-27.191128331123245,-32.219593021585574,-22.67682728683798,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu918,default,all,mechanical_energy_j,30,-27.191128331123245,-32.30254587887381,-22.7624489212763,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu306,default,all,mechanical_energy_j,30,10.196491056955336,5.243767437982512,15.283642249023655,0.0008999100089991,paired sign-flip permutation,config minus reference,0.0053994600539946005
+cpu1036.8_gpu612,default,all,mechanical_energy_j,30,12.343587800015277,5.987290494468781,18.766758531077496,0.0013998600139986,paired sign-flip permutation,config minus reference,0.006999300069993
+cpu1036.8_gpu918,default,all,mechanical_energy_j,30,11.40393826643584,4.786179697382883,18.10814729995133,0.0025997400259974,paired sign-flip permutation,config minus reference,0.0103989601039896
+cpu1984_gpu306,default,all,mechanical_energy_j,30,-3.270816388365594,-7.781342288656873,0.4458741557547397,0.136986301369863,paired sign-flip permutation,config minus reference,0.273972602739726
+cpu1984_gpu612,default,all,mechanical_energy_j,30,-4.271921907850043,-8.956330788599937,-0.2059328771793322,0.0725927407259274,paired sign-flip permutation,config minus reference,0.2177782221777822
+cpu1984_gpu918,default,all,mechanical_energy_j,30,-0.2398536039164412,-6.13765037807536,5.630373183871164,0.944105589441056,paired sign-flip permutation,config minus reference,0.944105589441056
+cpu115.2_gpu306,default,grasping,mechanical_energy_j,15,-29.57049464865787,-38.01036347202168,-22.113000651164544,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,grasping,mechanical_energy_j,15,-29.57049464865787,-38.253378583346326,-22.090290040139088,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu918,default,grasping,mechanical_energy_j,15,-29.57049464865787,-38.08345049613276,-22.100840777042155,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu1036.8_gpu306,default,grasping,mechanical_energy_j,15,18.543866763108177,11.129363836500804,25.407961756435647,0.0003999600039996,paired sign-flip permutation,config minus reference,0.0023997600239976
+cpu1036.8_gpu612,default,grasping,mechanical_energy_j,15,24.66765055445128,15.914848136207585,32.31060639386743,0.0007999200079992,paired sign-flip permutation,config minus reference,0.0034996500349965
+cpu1036.8_gpu918,default,grasping,mechanical_energy_j,15,23.332703789324476,13.558934790006932,32.070304807080525,0.0006999300069993,paired sign-flip permutation,config minus reference,0.0034996500349965
+cpu1984_gpu306,default,grasping,mechanical_energy_j,15,-4.671448448850624,-12.23647386333482,1.088073465224652,0.2540745925407459,paired sign-flip permutation,config minus reference,0.6680331966803319
+cpu1984_gpu612,default,grasping,mechanical_energy_j,15,-5.811161944973832,-14.440303950323864,1.686279911579033,0.2226777322267773,paired sign-flip permutation,config minus reference,0.6680331966803319
+cpu1984_gpu918,default,grasping,mechanical_energy_j,15,-0.64152002382687,-11.26946379980302,9.181032174974,0.898010198980102,paired sign-flip permutation,config minus reference,0.898010198980102
+cpu115.2_gpu306,default,pushing,mechanical_energy_j,15,-24.811762013588627,-29.502098483796637,-20.386961147673336,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu612,default,pushing,mechanical_energy_j,15,-24.81176201358864,-29.46339969632272,-20.39040686111744,9.999000099990002e-05,paired sign-flip permutation,config minus reference,0.0008999100089991002
+cpu115.2_gpu918,default,pushing,mechanical_energy_j,15,-24.81176201358864,-29.602395793433114,-20.305998275186404,0.0002999700029997,paired sign-flip permutation,config minus reference,0.0020997900209979
+cpu1036.8_gpu306,default,pushing,mechanical_energy_j,15,1.8491153508024931,-2.042554960580277,5.743734317330727,0.3797620237976202,paired sign-flip permutation,config minus reference,1.0
+cpu1036.8_gpu612,default,pushing,mechanical_energy_j,15,0.0195250455792709,-4.706678570659528,4.442870384793815,0.9929007099290073,paired sign-flip permutation,config minus reference,1.0
+cpu1036.8_gpu918,default,pushing,mechanical_energy_j,15,-0.5248272564527937,-5.2704561836703245,4.076538402445166,0.8345165483451655,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu306,default,pushing,mechanical_energy_j,15,-1.8701843278805617,-6.4834375372862425,2.112234760805262,0.4557544245575442,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu612,default,pushing,mechanical_energy_j,15,-2.7326818707262523,-6.70670794131219,0.7869379340827696,0.2004799520047995,paired sign-flip permutation,config minus reference,1.0
+cpu1984_gpu918,default,pushing,mechanical_energy_j,15,0.1618128159939878,-4.603134917974813,6.52659951676478,0.9775022497750224,paired sign-flip permutation,config minus reference,1.0
+cpu115.2_gpu306,default,all,success,30,-50.0,,,6.103515625e-05,exact McNemar,"ref-only 15, config-only 0; diff in percentage points",0.00054931640625
+cpu115.2_gpu612,default,all,success,30,-50.0,,,6.103515625e-05,exact McNemar,"ref-only 15, config-only 0; diff in percentage points",0.00054931640625
+cpu115.2_gpu918,default,all,success,30,-50.0,,,6.103515625e-05,exact McNemar,"ref-only 15, config-only 0; diff in percentage points",0.00054931640625
+cpu1036.8_gpu306,default,all,success,30,-40.0,,,0.007537841796875,exact McNemar,"ref-only 15, config-only 3; diff in percentage points",0.04522705078125
+cpu1036.8_gpu612,default,all,success,30,-30.0,,,0.049041748046875,exact McNemar,"ref-only 13, config-only 4; diff in percentage points",0.245208740234375
+cpu1036.8_gpu918,default,all,success,30,-23.33333333333333,,,0.1670684814453125,exact McNemar,"ref-only 13, config-only 6; diff in percentage points",0.66827392578125
+cpu1984_gpu306,default,all,success,30,-3.333333333333333,,,1.0,exact McNemar,"ref-only 4, config-only 3; diff in percentage points",1.0
+cpu1984_gpu612,default,all,success,30,3.333333333333333,,,1.0,exact McNemar,"ref-only 2, config-only 3; diff in percentage points",1.0
+cpu1984_gpu918,default,all,success,30,-6.666666666666667,,,0.6875,exact McNemar,"ref-only 4, config-only 2; diff in percentage points",1.0
+cpu115.2_gpu306,default,grasping,success,15,-73.33333333333333,,,0.0009765625,exact McNemar,"ref-only 11, config-only 0; diff in percentage points",0.0087890625
+cpu115.2_gpu612,default,grasping,success,15,-73.33333333333333,,,0.0009765625,exact McNemar,"ref-only 11, config-only 0; diff in percentage points",0.0087890625
+cpu115.2_gpu918,default,grasping,success,15,-73.33333333333333,,,0.0009765625,exact McNemar,"ref-only 11, config-only 0; diff in percentage points",0.0087890625
+cpu1036.8_gpu306,default,grasping,success,15,-73.33333333333333,,,0.0009765625,exact McNemar,"ref-only 11, config-only 0; diff in percentage points",0.0087890625
+cpu1036.8_gpu612,default,grasping,success,15,-73.33333333333333,,,0.0009765625,exact McNemar,"ref-only 11, config-only 0; diff in percentage points",0.0087890625
+cpu1036.8_gpu918,default,grasping,success,15,-73.33333333333333,,,0.0009765625,exact McNemar,"ref-only 11, config-only 0; diff in percentage points",0.0087890625
+cpu1984_gpu306,default,grasping,success,15,6.666666666666667,,,1.0,exact McNemar,"ref-only 1, config-only 2; diff in percentage points",1.0
+cpu1984_gpu612,default,grasping,success,15,6.666666666666667,,,1.0,exact McNemar,"ref-only 1, config-only 2; diff in percentage points",1.0
+cpu1984_gpu918,default,grasping,success,15,-13.333333333333334,,,0.6875,exact McNemar,"ref-only 4, config-only 2; diff in percentage points",1.0
+cpu115.2_gpu306,default,pushing,success,15,-26.666666666666668,,,0.125,exact McNemar,"ref-only 4, config-only 0; diff in percentage points",1.0
+cpu115.2_gpu612,default,pushing,success,15,-26.666666666666668,,,0.125,exact McNemar,"ref-only 4, config-only 0; diff in percentage points",1.0
+cpu115.2_gpu918,default,pushing,success,15,-26.666666666666668,,,0.125,exact McNemar,"ref-only 4, config-only 0; diff in percentage points",1.0
+cpu1036.8_gpu306,default,pushing,success,15,-6.666666666666667,,,1.0,exact McNemar,"ref-only 4, config-only 3; diff in percentage points",1.0
+cpu1036.8_gpu612,default,pushing,success,15,13.333333333333334,,,0.6875,exact McNemar,"ref-only 2, config-only 4; diff in percentage points",1.0
+cpu1036.8_gpu918,default,pushing,success,15,26.666666666666668,,,0.2890625,exact McNemar,"ref-only 2, config-only 6; diff in percentage points",1.0
+cpu1984_gpu306,default,pushing,success,15,-13.333333333333334,,,0.625,exact McNemar,"ref-only 3, config-only 1; diff in percentage points",1.0
+cpu1984_gpu612,default,pushing,success,15,0.0,,,1.0,exact McNemar,"ref-only 1, config-only 1; diff in percentage points",1.0
+cpu1984_gpu918,default,pushing,success,15,0.0,,,1.0,exact McNemar,"ref-only 0, config-only 0; diff in percentage points",1.0
